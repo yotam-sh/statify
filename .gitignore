@@ -1,0 +1,12 @@
+.env
+__pycache__/
+.claude
+data
+*.pyc
+.cache
+.spotify_cache
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
