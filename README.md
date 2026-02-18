@@ -4,12 +4,25 @@ A personal Spotify listening analytics dashboard built with FastAPI and a single
 
 ## Features
 
-- **Dashboard** - Total plays, hours, unique artists/tracks, listening trend over time, top 5 artists and tracks with images
-- **Top Artists** - Ranked table and horizontal bar chart with artist photos, filterable by year and limit
-- **Top Tracks** - Ranked table and chart with album cover art
-- **Timeline** - Yearly hours bar chart, monthly heatmap, taste evolution (top 5 artists per year)
-- **Listening Habits** - Hour-of-day and day-of-week patterns, shuffle/skip/platform breakdowns
-- **Artist Deep-Dive** - Search any artist for detailed stats, listening timeline, top albums with cover art, and top tracks
+### Tabs
+
+- **Dashboard** - Total plays, hours, unique artists/tracks, listening trend line chart, top 5 artists and tracks with progress bars and images
+- **Top Artists** - Treemap chart with artist photos as tile backgrounds, ranked table with images, filterable by year and limit (25/50/100)
+- **Top Albums** - Treemap chart with album cover art as tile backgrounds, ranked table with covers, filterable by year and limit
+- **Top Tracks** - Treemap chart with album art, ranked table, filterable by year and limit
+- **Timeline** - Yearly hours bar chart, interactive monthly heatmap with daily drill-down popups, taste evolution bump chart showing top 5 artists per year with circular artist photos and rank lines
+- **Listening Habits** - Hour-of-day and day-of-week bar charts with Total/Average toggles, shuffle/skip percentage stats, platform treemap
+- **Artist Deep-Dive** - Search any artist for detailed stats, monthly listening timeline, top 5 album covers, and top tracks table
+
+### UX Features
+
+- **Hours/Minutes toggle** - Switch between hours and minutes display globally from the navbar
+- **Year filter buttons** - Multi-select year filtering on all tabs, with "All Time" default and clear button
+- **Crosshair plugin** - Crosshair guides on chart hover for precise reading
+- **Loading states** - Spinner overlay on tab refresh, loading indicators on first visit
+- **Treemap image tiles** - Artist photos and album covers fill treemap tiles in cover mode with dark overlay for text readability
+- **Bump chart** - Taste evolution shown as rank lines (1-5) with circular artist photos at data points; solid lines for consecutive years, dashed lines when an artist drops out and returns
+- **Heatmap drill-down** - Click any monthly heatmap cell to see a daily breakdown popup with per-day listening hours
 
 ### Image System
 
@@ -76,7 +89,7 @@ spotify-tracker/
 ## Tech Stack
 
 - **Backend**: FastAPI, pandas, spotipy
-- **Frontend**: Vanilla JS, Tailwind CSS (CDN), Chart.js v4
+- **Frontend**: Vanilla JS, Tailwind CSS (CDN), Chart.js v4, chartjs-chart-treemap
 - **Image Cache**: SQLite with async background resolution
 - **API**: Spotify Web API (Client Credentials flow, no user login needed)
 

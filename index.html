@@ -6,6 +6,7 @@
 <title>Spotify Tracker</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-treemap@3.1.0"></script>
 <style>
   :root { --spotify-green: #1DB954; --bg-dark: #121212; --bg-card: #1e1e1e; --bg-card-hover: #282828; --text-primary: #ffffff; --text-secondary: #b3b3b3; }
   body { background: var(--bg-dark); color: var(--text-primary); font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
@@ -17,8 +18,19 @@
   .stat-card .value { font-size: 1.8rem; font-weight: 700; color: var(--spotify-green); }
   .stat-card .label { font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem; }
   .table-row:hover { background: var(--bg-card-hover); }
-  .heatmap-cell { width: 100%; aspect-ratio: 1; border-radius: 3px; transition: transform 0.15s; cursor: default; }
-  .heatmap-cell:hover { transform: scale(1.3); z-index: 10; }
+  .heatmap-cell { width: 100%; aspect-ratio: 1.4; border-radius: 3px; transition: transform 0.15s; cursor: pointer; position: relative; }
+  .heatmap-cell:hover { transform: scale(1.15); z-index: 10; }
+  .heatmap-cell.empty { cursor: default; opacity: 0.4; }
+  .heatmap-cell.empty:hover { transform: none; }
+  .heatmap-tooltip { position: absolute; pointer-events: none; background: rgba(30,30,30,0.95); border: 1px solid #444; border-radius: 8px; padding: 8px 12px; color: #fff; font-size: 0.8rem; white-space: nowrap; z-index: 50; opacity: 0; transition: opacity 0.15s; }
+  .heatmap-popup { position: fixed; background: var(--bg-card); border: 1px solid #444; border-radius: 12px; padding: 16px 20px; z-index: 100; box-shadow: 0 8px 32px rgba(0,0,0,0.5); min-width: 280px; }
+  .heatmap-popup .popup-title { font-size: 1rem; font-weight: 600; color: #fff; margin-bottom: 4px; }
+  .heatmap-popup .popup-subtitle { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px; }
+  .heatmap-popup .popup-close { position: absolute; top: 8px; right: 12px; background: none; border: none; color: #888; font-size: 1.2rem; cursor: pointer; }
+  .heatmap-popup .popup-close:hover { color: #fff; }
+  .heatmap-day { width: 100%; aspect-ratio: 1; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 0.65rem; color: rgba(255,255,255,0.5); cursor: default; position: relative; }
+  .heatmap-day:hover { outline: 1px solid var(--spotify-green); z-index: 5; }
+  .heatmap-day-empty { width: 100%; aspect-ratio: 1; }
   .search-results { background: var(--bg-card); border: 1px solid #333; border-radius: 8px; max-height: 240px; overflow-y: auto; }
   .search-results div { padding: 0.5rem 1rem; cursor: pointer; }
   .search-results div:hover { background: var(--bg-card-hover); }
@@ -33,6 +45,10 @@
   .year-btn-clear:hover { color: #ff6b6b; border-color: #ff6b6b; }
   .suggestion-chip { background: #282828; color: #b3b3b3; border: 1px solid #444; border-radius: 20px; padding: 0.3rem 1rem 0.3rem 0.3rem; font-size: 0.85rem; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.5rem; }
   .suggestion-chip:hover { border-color: var(--spotify-green); color: #fff; background: #333; }
+  .unit-switch { display: flex; background: #282828; border-radius: 20px; padding: 2px; gap: 2px; }
+  .unit-opt { background: transparent; color: #888; border: none; border-radius: 18px; padding: 0.2rem 0.7rem; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
+  .unit-opt.active { background: var(--spotify-green); color: #000; font-weight: 600; }
+  .unit-opt:hover:not(.active) { color: #fff; }
   .img-placeholder { background: #333; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
   .img-placeholder svg { width: 50%; height: 50%; fill: #666; }
   .img-placeholder.loading svg { animation: spin 1.2s linear infinite; }
@@ -63,10 +79,15 @@ tailwind.config = {
     <div class="flex gap-1">
       <button class="tab-btn active px-3 py-4 text-sm" data-tab="dashboard">Dashboard</button>
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="top-artists">Top Artists</button>
+      <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="top-albums">Top Albums</button>
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="top-tracks">Top Tracks</button>
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="timeline">Timeline</button>
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="habits">Habits</button>
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="deep-dive">Artist Deep-Dive</button>
+    </div>
+    <div class="unit-switch">
+      <button class="unit-opt active" data-unit="h" onclick="setUnit(false)">Hours</button>
+      <button class="unit-opt" data-unit="m" onclick="setUnit(true)">Minutes</button>
     </div>
   </div>
 </nav>
@@ -104,13 +125,36 @@ tailwind.config = {
     </div>
     <div id="top-artists-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="top-artists-content" class="hidden">
-      <div class="card mb-6"><canvas id="chart-artists-bar"></canvas></div>
+      <div class="card mb-6" style="height:500px"><canvas id="chart-artists-bar"></canvas></div>
       <div class="card overflow-x-auto">
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b border-white/10">
-            <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Artist</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right">Hours</th>
+            <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Artist</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right dur-header">Hours</th>
           </tr></thead>
           <tbody id="artists-table"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Top Albums -->
+  <section id="tab-top-albums" class="hidden">
+    <div class="flex flex-wrap items-center gap-2 mb-4">
+      <div id="albums-year-btns" class="flex flex-wrap gap-1"></div>
+      <label class="text-sm text-gray-400 ml-2">Limit</label>
+      <select id="albums-limit" class="filter-input">
+        <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option>
+      </select>
+    </div>
+    <div id="top-albums-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
+    <div id="top-albums-content" class="hidden">
+      <div class="card mb-6" style="height:500px"><canvas id="chart-albums-bar"></canvas></div>
+      <div class="card overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-gray-400 border-b border-white/10">
+            <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Album</th><th class="py-2 px-3">Artist</th><th class="py-2 px-3 text-right">Tracks</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right dur-header">Hours</th>
+          </tr></thead>
+          <tbody id="albums-table"></tbody>
         </table>
       </div>
     </div>
@@ -127,11 +171,11 @@ tailwind.config = {
     </div>
     <div id="top-tracks-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="top-tracks-content" class="hidden">
-      <div class="card mb-6"><canvas id="chart-tracks-bar"></canvas></div>
+      <div class="card mb-6" style="height:500px"><canvas id="chart-tracks-bar"></canvas></div>
       <div class="card overflow-x-auto">
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b border-white/10">
-            <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Track</th><th class="py-2 px-3">Artist</th><th class="py-2 px-3">Album</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right">Hours</th>
+            <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Track</th><th class="py-2 px-3">Artist</th><th class="py-2 px-3">Album</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right dur-header">Hours</th>
           </tr></thead>
           <tbody id="tracks-table"></tbody>
         </table>
@@ -151,7 +195,7 @@ tailwind.config = {
         <h3 class="text-lg font-semibold mb-4">Monthly Heatmap</h3>
         <div id="heatmap-container"></div>
       </div>
-      <div class="card"><h3 class="text-lg font-semibold mb-4">Taste Evolution (Top 5 Artists per Year)</h3><canvas id="chart-evolution" height="120"></canvas></div>
+      <div class="card"><h3 class="text-lg font-semibold mb-4">Taste Evolution (Top 5 Artists per Year)</h3><div style="height:500px"><canvas id="chart-evolution"></canvas></div></div>
     </div>
   </section>
 
@@ -164,19 +208,37 @@ tailwind.config = {
     <div id="habits-content" class="hidden">
       <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6" id="habits-stats"></div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        <div class="card"><h3 class="text-lg font-semibold mb-4">Listening by Hour of Day</h3><canvas id="chart-hourly"></canvas></div>
-        <div class="card"><h3 class="text-lg font-semibold mb-4">Listening by Day of Week</h3><canvas id="chart-daily"></canvas></div>
+        <div class="card">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">Listening by Hour of Day</h3>
+            <div class="unit-switch" id="hourly-mode-switch">
+              <button class="unit-opt active" data-mode="total" onclick="setHourlyMode('total')">Total</button>
+              <button class="unit-opt" data-mode="avg" onclick="setHourlyMode('avg')">Average</button>
+            </div>
+          </div>
+          <canvas id="chart-hourly"></canvas>
+        </div>
+        <div class="card">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold">Listening by Day of Week</h3>
+            <div class="unit-switch" id="daily-mode-switch">
+              <button class="unit-opt active" data-mode="total" onclick="setDailyMode('total')">Total</button>
+              <button class="unit-opt" data-mode="avg" onclick="setDailyMode('avg')">Average</button>
+            </div>
+          </div>
+          <canvas id="chart-daily"></canvas>
+        </div>
       </div>
       <div class="grid grid-cols-3 gap-6">
-        <div class="card"><h3 class="text-lg font-semibold mb-4">Shuffle Usage</h3><div style="height:160px"><canvas id="chart-shuffle"></canvas></div></div>
-        <div class="card"><h3 class="text-lg font-semibold mb-4">Skip Rate</h3><div style="height:160px"><canvas id="chart-skip"></canvas></div></div>
-        <div class="card"><h3 class="text-lg font-semibold mb-4">Platform</h3><div style="height:160px"><canvas id="chart-platform"></canvas></div></div>
+        <div class="card"><h3 class="text-lg font-semibold mb-4">Shuffle Usage</h3><div id="shuffle-stat" class="flex items-center justify-center" style="height:160px"></div></div>
+        <div class="card"><h3 class="text-lg font-semibold mb-4">Skip Rate</h3><div id="skip-stat" class="flex items-center justify-center" style="height:160px"></div></div>
+        <div class="card"><h3 class="text-lg font-semibold mb-4">Platform</h3><div style="height:200px"><canvas id="chart-platform"></canvas></div></div>
       </div>
     </div>
   </section>
 
   <!-- Artist Deep-Dive -->
-  <section id="tab-deep-dive" class="hidden">
+  <section id="tab-deep-dive" class="hidden" style="overflow:hidden">
     <div class="relative max-w-md mb-4">
       <input type="text" id="artist-search" placeholder="Search for an artist..." class="filter-input w-full text-base py-2.5" autocomplete="off">
       <div id="artist-search-results" class="search-results absolute w-full mt-1 hidden"></div>
@@ -193,7 +255,7 @@ tailwind.config = {
         <h3 class="text-lg font-semibold mb-4">Top Tracks</h3>
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b border-white/10">
-            <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3">Track</th><th class="py-2 px-3">Album</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right">Hours</th>
+            <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3">Track</th><th class="py-2 px-3">Album</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right dur-header">Hours</th>
           </tr></thead>
           <tbody id="artist-tracks-table"></tbody>
         </table>
@@ -254,10 +316,30 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     const tab = btn.dataset.tab;
     document.getElementById('tab-' + tab).classList.remove('hidden');
     // Load on first visit
-    const loaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-tracks': loadTopTracks, timeline: loadTimeline, habits: loadHabits, 'deep-dive': loadDeepDiveSuggestions };
+    const loaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-tracks': loadTopTracks, 'top-albums': loadTopAlbums, timeline: loadTimeline, habits: loadHabits, 'deep-dive': loadDeepDiveSuggestions };
     if (loaders[tab]) loaders[tab]();
   });
 });
+
+// ── Unit toggle ─────────────────────────────────────────────────────
+let useMinutes = false;
+let currentArtist = null;
+function fmtDur(hours) {
+  if (useMinutes) return Math.round(hours * 60).toLocaleString();
+  return hours.toLocaleString();
+}
+function durLabel() { return useMinutes ? 'Minutes' : 'Hours'; }
+function durVal(hours) { return useMinutes ? Math.round(hours * 60) : hours; }
+function setUnit(minutes) {
+  if (useMinutes === minutes) return;
+  useMinutes = minutes;
+  document.querySelectorAll('nav .unit-opt').forEach(b => b.classList.toggle('active', b.dataset.unit === (minutes ? 'm' : 'h')));
+  document.querySelectorAll('.dur-header').forEach(el => el.textContent = durLabel());
+  const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+  const loaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-tracks': loadTopTracks, 'top-albums': loadTopAlbums, timeline: loadTimeline, habits: loadHabits };
+  if (loaders[activeTab]) loaders[activeTab]();
+  if (activeTab === 'deep-dive' && currentArtist) selectArtist(currentArtist);
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 function makeChart(id, config) {
@@ -365,16 +447,48 @@ function wrapLabel(text, maxLen) {
   return lines;
 }
 
-function horizontalBar(id, labels, values, height, xLabel) {
+// Shared custom tooltip element
+const customTooltipEl = (() => {
+  const el = document.createElement('div');
+  el.id = 'custom-tooltip';
+  el.style.cssText = 'position:absolute;pointer-events:none;transition:opacity 0.15s;opacity:0;background:rgba(30,30,30,0.95);border:1px solid #444;border-radius:10px;padding:12px 16px;text-align:center;z-index:50;min-width:120px;';
+  document.body.appendChild(el);
+  return el;
+})();
+
+function customTooltip(context, imgLookup, rounded, origLabels) {
+  const tooltip = context.tooltip;
+  if (tooltip.opacity === 0) { customTooltipEl.style.opacity = '0'; return; }
+  const dp = tooltip.dataPoints?.[0];
+  if (!dp) return;
+  const label = origLabels && dp.dataIndex != null ? origLabels[dp.dataIndex] : (dp.dataset.label || (Array.isArray(dp.label) ? dp.label.join(' ') : dp.label));
+  const value = dp.raw;
+  const imgUrl = imgLookup ? (imgLookup[label] || '') : '';
+  const r = rounded ? 'border-radius:50%;' : 'border-radius:6px;';
+  const imgHtml = imgUrl
+    ? `<img src="${imgUrl}" style="width:64px;height:64px;${r}object-fit:cover;margin:0 auto 8px;">`
+    : `<div style="width:64px;height:64px;${r}background:#333;margin:0 auto 8px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:32px;height:32px;fill:#666"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`;
+  customTooltipEl.innerHTML = `${imgHtml}<div style="color:#fff;font-weight:600;font-size:0.9rem">${esc(label)}</div><div style="color:#b3b3b3;font-size:0.8rem">${value.toLocaleString()} ${durLabel().toLowerCase()}</div>`;
+  const pos = context.chart.canvas.getBoundingClientRect();
+  customTooltipEl.style.opacity = '1';
+  customTooltipEl.style.left = pos.left + window.scrollX + tooltip.caretX - customTooltipEl.offsetWidth / 2 + 'px';
+  customTooltipEl.style.top = pos.top + window.scrollY + tooltip.caretY - customTooltipEl.offsetHeight - 10 + 'px';
+}
+
+function horizontalBar(id, labels, values, height, xLabel, images, rounded) {
   const canvas = document.getElementById(id);
   const h = Math.max(height || 0, labels.length * 32);
   canvas.parentElement.style.height = h + 'px';
   const wrappedLabels = labels.map(l => wrapLabel(l, 20));
+  const imgLookup = images || null;
+  const origLabels = labels;
   makeChart(id, {
     type: 'bar',
     data: { labels: wrappedLabels, datasets: [{ data: values, backgroundColor: GREEN, borderRadius: 4, barThickness: 18 }] },
-    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-      scales: { x: { grid: { color: '#222' }, title: axisTitle(xLabel || 'Hours') },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: imgLookup ? { enabled: false, external: ctx => customTooltip(ctx, imgLookup, rounded, origLabels) } : {} },
+      scales: { x: { grid: { color: '#222' }, title: axisTitle(xLabel || durLabel()) },
         y: { grid: { display: false }, afterFit(axis) { axis.width = 150; }, ticks: { autoSkip: false } } } }
   });
 }
@@ -384,9 +498,124 @@ function doughnutChart(id, labels, values, colors) {
     type: 'doughnut',
     data: { labels, datasets: [{ data: values, backgroundColor: colors || [GREEN, '#444'], borderWidth: 0 }] },
     options: { responsive: true, maintainAspectRatio: false, cutout: '65%', plugins: {
-      legend: { position: 'bottom', labels: { padding: 16 } },
+      legend: { position: 'left', labels: { padding: 12, boxWidth: 12 } },
       tooltip: { callbacks: { label: ctx => { const total = ctx.dataset.data.reduce((a,b)=>a+b,0); return `${ctx.label}: ${ctx.raw.toLocaleString()} (${(ctx.raw/total*100).toFixed(1)}%)`; } } }
     }}
+  });
+}
+
+// Treemap image plugin — draws images on treemap tiles as fill backgrounds
+const treemapImagePlugin = {
+  id: 'treemapImages',
+  afterDatasetsDraw(chart) {
+    const meta = chart.getDatasetMeta(0);
+    if (!meta || !meta.data) return;
+    const imgLookup = chart.options._imgLookup;
+    if (!imgLookup) return;
+    const ctx = chart.ctx;
+    const imgCache = chart.config._imgCache || {};
+    meta.data.forEach((el, i) => {
+      const raw = el.$context?.raw;
+      const label = raw?.g || '';
+      const url = imgLookup[label];
+      if (!url) return;
+      if (!imgCache[url]) {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.src = url;
+        img.onload = () => { imgCache[url] = img; chart.config._imgCache = imgCache; chart.draw(); };
+        imgCache[url] = 'loading';
+        return;
+      }
+      if (imgCache[url] === 'loading') return;
+      const img = imgCache[url];
+      const { x, y, width, height } = el;
+      if (width < 4 || height < 4) return;
+      ctx.save();
+      // Clip to tile bounds
+      ctx.beginPath();
+      ctx.rect(x, y, width, height);
+      ctx.clip();
+      // Draw image in "cover" mode: scale to fill tile, center crop
+      const imgRatio = img.naturalWidth / img.naturalHeight;
+      const tileRatio = width / height;
+      let drawW, drawH, drawX, drawY;
+      if (imgRatio > tileRatio) {
+        drawH = height;
+        drawW = height * imgRatio;
+        drawX = x + (width - drawW) / 2;
+        drawY = y;
+      } else {
+        drawW = width;
+        drawH = width / imgRatio;
+        drawX = x;
+        drawY = y + (height - drawH) / 2;
+      }
+      ctx.drawImage(img, drawX, drawY, drawW, drawH);
+      // Dark overlay for text readability
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(x, y, width, height);
+      ctx.restore();
+    });
+  }
+};
+Chart.register(treemapImagePlugin);
+
+function buildTreemap(id, tableData, labelKey, valueKey, imgLookup, rounded) {
+  const tree = tableData.map(r => ({
+    label: r[labelKey],
+    value: durVal(r[valueKey]),
+    _imgUrl: imgLookup[r[labelKey]] || '',
+  }));
+
+  makeChart(id, {
+    type: 'treemap',
+    data: { datasets: [{
+      tree,
+      key: 'value',
+      groups: ['label'],
+      backgroundColor(ctx) {
+        if (ctx.type !== 'data') return '#333';
+        return PALETTE[ctx.dataIndex % PALETTE.length];
+      },
+      borderWidth: 2,
+      borderColor: '#333',
+      labels: {
+        display: true,
+        color: '#fff',
+        font: { size: 11, weight: 'bold' },
+        overflow: 'fit',
+        formatter(ctx) {
+          if (ctx.type !== 'data') return '';
+          return [ctx.raw.g, ctx.raw.v ? fmtDur(ctx.raw.v / (useMinutes ? 60 : 1)) + ' ' + durLabel().toLowerCase() : ''];
+        }
+      }
+    }] },
+    options: { responsive: true, maintainAspectRatio: false, _imgLookup: imgLookup,
+      plugins: { legend: { display: false },
+        tooltip: {
+          enabled: false,
+          external: (context) => {
+            const tooltip = context.tooltip;
+            if (tooltip.opacity === 0) { customTooltipEl.style.opacity = '0'; return; }
+            const dp = tooltip.dataPoints?.[0];
+            if (!dp || !dp.raw) return;
+            const label = dp.raw.g || '';
+            const value = dp.raw.v || 0;
+            const imgUrl = imgLookup[label] || '';
+            const r = rounded ? 'border-radius:50%;' : 'border-radius:6px;';
+            const imgHtml = imgUrl
+              ? `<img src="${imgUrl}" style="width:64px;height:64px;${r}object-fit:cover;margin:0 auto 8px;">`
+              : `<div style="width:64px;height:64px;${r}background:#333;margin:0 auto 8px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:32px;height:32px;fill:#666"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`;
+            customTooltipEl.innerHTML = `${imgHtml}<div style="color:#fff;font-weight:600;font-size:0.9rem">${esc(label)}</div><div style="color:#b3b3b3;font-size:0.8rem">${fmtDur(value / (useMinutes ? 60 : 1))} ${durLabel().toLowerCase()}</div>`;
+            const pos = context.chart.canvas.getBoundingClientRect();
+            customTooltipEl.style.opacity = '1';
+            customTooltipEl.style.left = pos.left + window.scrollX + tooltip.caretX - customTooltipEl.offsetWidth / 2 + 'px';
+            customTooltipEl.style.top = pos.top + window.scrollY + tooltip.caretY - customTooltipEl.offsetHeight - 10 + 'px';
+          }
+        }
+      }
+    }
   });
 }
 
@@ -456,7 +685,7 @@ async function loadDashboard() {
   const s = data.stats;
   document.getElementById('dashboard-stats').innerHTML =
     statCard(s.total_plays.toLocaleString(), 'Total Plays') +
-    statCard(s.total_hours.toLocaleString() + 'h', 'Total Hours') +
+    statCard(fmtDur(s.total_hours), 'Total ' + durLabel()) +
     statCard(s.unique_artists.toLocaleString(), 'Unique Artists') +
     statCard(s.unique_tracks.toLocaleString(), 'Unique Tracks') +
     statCard(s.first_listen + ' &rarr; ' + s.last_listen, 'Date Range');
@@ -465,14 +694,14 @@ async function loadDashboard() {
   makeChart('chart-monthly-hours', {
     type: 'line',
     data: { labels: data.monthly_hours.labels, datasets: [{
-      data: data.monthly_hours.values, fill: true,
+      data: data.monthly_hours.values.map(durVal), fill: true,
       backgroundColor: GREEN_15, borderColor: GREEN, borderWidth: 2, tension: 0.3, pointRadius: 0, pointHitRadius: 10
     }]},
     options: { responsive: true,
       plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: 20 }, title: axisTitle('Month') },
-        y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle('Hours') }
+        y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle(durLabel()) }
       }
     }
   });
@@ -485,7 +714,7 @@ async function loadDashboard() {
     return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
       ${imgTag(ta.images && ta.images[i], 36, true, name)}
       <div style="flex:1;min-width:0">
-        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span class="text-sm font-medium" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span><span class="text-sm text-gray-400">${ta.values[i]}h</span></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span class="text-sm font-medium" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span><span class="text-sm text-gray-400">${fmtDur(ta.values[i])}</span></div>
         <div style="height:6px;background:#2a2a2a;border-radius:3px"><div style="height:100%;width:${pct}%;background:${GREEN};border-radius:3px"></div></div>
       </div>
     </div>`;
@@ -500,7 +729,7 @@ async function loadDashboard() {
     return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
       ${imgTag(tt.images && tt.images[i], 36, false, albumKey)}
       <div style="flex:1;min-width:0">
-        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span class="text-sm font-medium" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span><span class="text-sm text-gray-400">${tt.values[i]}h</span></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:2px"><span class="text-sm font-medium" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span><span class="text-sm text-gray-400">${fmtDur(tt.values[i])}</span></div>
         <div style="height:6px;background:#2a2a2a;border-radius:3px"><div style="height:100%;width:${pct}%;background:${GREEN};border-radius:3px"></div></div>
       </div>
     </div>`;
@@ -530,13 +759,12 @@ async function loadTopArtists() {
     yearsInitialized.topArtists = true;
   }
 
-  const chartLabels = data.chart.labels.slice(0, 25);
-  const chartValues = data.chart.values.slice(0, 25);
-  const h = Math.max(300, chartLabels.length * 28);
-  horizontalBar('chart-artists-bar', chartLabels, chartValues, h, 'Hours');
+  const artistImgLookup = {};
+  data.table.forEach(r => { if (r.image) artistImgLookup[r.artist] = r.image; });
+  buildTreemap('chart-artists-bar', data.table.slice(0, 50), 'artist', 'hours', artistImgLookup, true);
 
   document.getElementById('artists-table').innerHTML = data.table.map((r, i) =>
-    `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, true, r.artist)}</td><td class="py-2 px-3 font-medium">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${r.hours}</td></tr>`
+    `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, true, r.artist)}</td><td class="py-2 px-3 font-medium">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`
   ).join('');
   showContent('top-artists');
 
@@ -561,16 +789,46 @@ async function loadTopTracks() {
     yearsInitialized.topTracks = true;
   }
 
-  const chartLabels = data.chart.labels.slice(0, 25);
-  const chartValues = data.chart.values.slice(0, 25);
-  const h = Math.max(300, chartLabels.length * 28);
-  horizontalBar('chart-tracks-bar', chartLabels, chartValues, h, 'Hours');
+  const trackImgLookup = {};
+  data.table.forEach(r => { if (r.image) trackImgLookup[r.track] = r.image; });
+  buildTreemap('chart-tracks-bar', data.table.slice(0, 50), 'track', 'hours', trackImgLookup, false);
 
   document.getElementById('tracks-table').innerHTML = data.table.map((r, i) => {
     const albumKey = `${r.album}||${r.artist}`;
-    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${esc(r.track)}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${r.hours}</td></tr>`;
+    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${esc(r.track)}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
   showContent('top-tracks');
+
+  // Resolve uncached images in background
+  const missingAlbums = data.table.filter(r => !r.image).map(r => [r.album, r.artist]);
+  resolveImages([], missingAlbums);
+}
+
+// ── Top Albums ──────────────────────────────────────────────────────
+async function loadTopAlbums() {
+  const limit = document.getElementById('albums-limit').value;
+  const params = `limit=${limit}` + buildFilterParams('albums-year-btns');
+
+  showLoading('top-albums');
+
+  const data = await fetch('/api/top-albums?' + params).then(r => r.json());
+
+  if (!yearsInitialized.topAlbums) {
+    const dashData = await fetch('/api/dashboard').then(r => r.json());
+    setupYearButtons('albums-year-btns', dashData.years, loadTopAlbums);
+    document.getElementById('albums-limit').addEventListener('change', loadTopAlbums);
+    yearsInitialized.topAlbums = true;
+  }
+
+  const albumImgLookup = {};
+  data.table.forEach(r => { if (r.image) albumImgLookup[r.album] = r.image; });
+  buildTreemap('chart-albums-bar', data.table.slice(0, 50), 'album', 'hours', albumImgLookup, false);
+
+  document.getElementById('albums-table').innerHTML = data.table.map((r, i) => {
+    const albumKey = `${r.album}||${r.artist}`;
+    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${esc(r.album)}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.tracks}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
+  }).join('');
+  showContent('top-albums');
 
   // Resolve uncached images in background
   const missingAlbums = data.table.filter(r => !r.image).map(r => [r.album, r.artist]);
@@ -592,10 +850,10 @@ async function loadTimeline() {
   // Yearly bar chart (issue #8: axis labels)
   makeChart('chart-yearly', {
     type: 'bar',
-    data: { labels: data.yearly.labels, datasets: [{ data: data.yearly.values, backgroundColor: GREEN, borderRadius: 4 }] },
+    data: { labels: data.yearly.labels, datasets: [{ data: data.yearly.values.map(durVal), backgroundColor: GREEN, borderRadius: 4 }] },
     options: { responsive: true, plugins: { legend: { display: false } },
       scales: {
-        y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle('Hours') },
+        y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle(durLabel()) },
         x: { grid: { display: false }, title: axisTitle('Year') }
       }
     }
@@ -603,61 +861,354 @@ async function loadTimeline() {
 
   // Heatmap
   const hm = data.heatmap;
-  const years = Object.keys(hm).map(Number).sort();
+  const hmYears = Object.keys(hm).map(Number).sort();
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthsFull = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   let maxH = 0;
-  years.forEach(y => Object.values(hm[y]).forEach(v => { if (v > maxH) maxH = v; }));
+  hmYears.forEach(y => Object.values(hm[y]).forEach(v => { if (v > maxH) maxH = v; }));
 
-  let html = '<div class="grid gap-1" style="grid-template-columns: 60px repeat(12, 1fr)">';
+  let html = '<div class="grid" style="grid-template-columns: 50px repeat(12, 1fr); gap: 3px; max-width: 900px; margin: 0 auto;">';
   html += '<div></div>' + months.map(m => `<div class="text-xs text-gray-500 text-center">${m}</div>`).join('');
-  years.forEach(y => {
+  hmYears.forEach(y => {
     html += `<div class="text-xs text-gray-400 flex items-center">${y}</div>`;
     for (let m = 1; m <= 12; m++) {
       const v = (hm[y] && hm[y][m]) || 0;
+      const isEmpty = v === 0;
       const intensity = maxH > 0 ? v / maxH : 0;
-      const bg = intensity === 0 ? '#1a1a1a' : `rgba(29,185,84,${0.15 + intensity * 0.85})`;
-      html += `<div class="heatmap-cell" style="background:${bg}" title="${months[m-1]} ${y}: ${v}h"></div>`;
+      const bg = isEmpty ? '#1a1a1a' : `rgba(29,185,84,${0.15 + intensity * 0.85})`;
+      html += `<div class="heatmap-cell${isEmpty ? ' empty' : ''}" data-year="${y}" data-month="${m}" data-hours="${v}"${isEmpty ? ' data-empty="true"' : ''} style="background:${bg}"></div>`;
     }
   });
   html += '</div>';
   document.getElementById('heatmap-container').innerHTML = html;
 
-  // Taste evolution stacked bar
-  const evo = data.evolution;
-  const datasets = evo.artists.slice(0, 10).map((artist, i) => ({
-    label: artist,
-    data: evo.datasets[artist],
-    backgroundColor: PALETTE[i % PALETTE.length],
-    borderRadius: 2,
-  }));
-  makeChart('chart-evolution', {
-    type: 'bar',
-    data: { labels: evo.labels, datasets },
-    options: { responsive: true,
-      scales: {
-        x: { stacked: true, grid: { display: false }, title: axisTitle('Year') },
-        y: { stacked: true, grid: { color: '#222' }, beginAtZero: true, title: axisTitle('Hours') }
-      },
-      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, padding: 10 } } }
+  // Heatmap tooltip + drill-down popup
+  let hmTooltip = document.getElementById('hm-tooltip');
+  if (!hmTooltip) {
+    hmTooltip = document.createElement('div');
+    hmTooltip.id = 'hm-tooltip';
+    hmTooltip.className = 'heatmap-tooltip';
+    document.body.appendChild(hmTooltip);
+  }
+  let hmPopup = document.getElementById('hm-popup');
+  if (!hmPopup) {
+    hmPopup = document.createElement('div');
+    hmPopup.id = 'hm-popup';
+    hmPopup.className = 'heatmap-popup';
+    hmPopup.style.display = 'none';
+    document.body.appendChild(hmPopup);
+    // Scroll dismisses non-pinned popup
+    window.addEventListener('scroll', () => {
+      if (hmPopup.style.display !== 'none' && !hmPopup.dataset.pinned) {
+        hmPopup.style.display = 'none';
+      }
+    });
+    // Click outside closes pinned popup
+    document.addEventListener('click', (e) => {
+      if (hmPopup.style.display !== 'none' && hmPopup.dataset.pinned && !hmPopup.contains(e.target) && !e.target.closest('.heatmap-cell')) {
+        hmPopup.style.display = 'none';
+        delete hmPopup.dataset.pinned;
+      }
+    });
+  }
+  let hmTimer = null;
+  let hmPopupLeaveTimer = null;
+
+  hmPopup.addEventListener('mouseenter', () => { clearTimeout(hmPopupLeaveTimer); });
+  hmPopup.addEventListener('mouseleave', () => {
+    if (!hmPopup.dataset.pinned) {
+      hmPopupLeaveTimer = setTimeout(() => { hmPopup.style.display = 'none'; }, 300);
     }
+  });
+
+  async function openDailyPopup(cell, pinned) {
+    const y = cell.dataset.year;
+    const m = parseInt(cell.dataset.month);
+    try {
+      const res = await fetch(`/api/daily-heatmap?year=${y}&month=${m}`);
+      const dd = await res.json();
+      renderDailyPopup(hmPopup, parseInt(y), m, dd, cell, pinned);
+    } catch(err) { console.error('Daily heatmap error:', err); }
+  }
+
+  document.querySelectorAll('.heatmap-cell').forEach(cell => {
+    cell.addEventListener('mouseenter', () => {
+      const m = parseInt(cell.dataset.month);
+      const v = parseFloat(cell.dataset.hours);
+      const isEmpty = cell.dataset.empty === 'true';
+      hmTooltip.textContent = isEmpty ? `${months[m-1]} ${cell.dataset.year}: No data` : `${months[m-1]} ${cell.dataset.year}: ${fmtDur(v)} ${durLabel().toLowerCase()}`;
+      hmTooltip.style.opacity = '1';
+      const r = cell.getBoundingClientRect();
+      hmTooltip.style.left = r.left + r.width / 2 - hmTooltip.offsetWidth / 2 + window.scrollX + 'px';
+      hmTooltip.style.top = r.top - hmTooltip.offsetHeight - 6 + window.scrollY + 'px';
+
+      if (isEmpty) return;
+      clearTimeout(hmTimer);
+      hmTimer = setTimeout(() => openDailyPopup(cell, false), 4000);
+    });
+    cell.addEventListener('mouseleave', () => {
+      hmTooltip.style.opacity = '0';
+      clearTimeout(hmTimer);
+    });
+    // Click to pin
+    cell.addEventListener('click', () => {
+      if (cell.dataset.empty === 'true') return;
+      clearTimeout(hmTimer);
+      openDailyPopup(cell, true);
+    });
+  });
+
+  function renderDailyPopup(popup, year, month, dd, anchorCell, pinned) {
+    const totalDays = dd.total_days;
+    const days = dd.days;
+    let maxD = 0;
+    Object.values(days).forEach(v => { if (v > maxD) maxD = v; });
+
+    const firstDay = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+    const dayHeaders = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    let totalHours = Object.values(days).reduce((a, b) => a + b, 0);
+
+    let grid = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;">';
+    grid += dayHeaders.map(d => `<div class="text-center" style="font-size:0.6rem;color:#888;padding:2px 0">${d}</div>`).join('');
+    for (let i = 0; i < firstDay; i++) grid += '<div class="heatmap-day-empty"></div>';
+    for (let d = 1; d <= totalDays; d++) {
+      const v = days[d] || 0;
+      const intensity = maxD > 0 ? v / maxD : 0;
+      const bg = intensity === 0 ? '#1a1a1a' : `rgba(29,185,84,${0.15 + intensity * 0.85})`;
+      grid += `<div class="heatmap-day" style="background:${bg}" title="${months[month-1]} ${d}: ${fmtDur(v)} ${durLabel().toLowerCase()}">${d}</div>`;
+    }
+    grid += '</div>';
+
+    popup.innerHTML = `<button class="popup-close" onclick="document.getElementById('hm-popup').style.display='none';delete document.getElementById('hm-popup').dataset.pinned">&times;</button>
+      <div class="popup-title">${monthsFull[month-1]} ${year}</div>
+      <div class="popup-subtitle">${fmtDur(totalHours.toFixed(1))} ${durLabel().toLowerCase()} total</div>
+      ${grid}`;
+
+    if (pinned) {
+      popup.dataset.pinned = 'true';
+      popup.style.position = 'absolute';
+    } else {
+      delete popup.dataset.pinned;
+      popup.style.position = 'fixed';
+    }
+
+    popup.style.display = 'block';
+    const r = anchorCell.getBoundingClientRect();
+    const pw = popup.offsetWidth;
+    const ph = popup.offsetHeight;
+    let left, top;
+    if (pinned) {
+      left = r.left + r.width / 2 - pw / 2 + window.scrollX;
+      top = r.bottom + 8 + window.scrollY;
+      if (left < 8) left = 8;
+      if (top + ph > window.scrollY + window.innerHeight - 8) top = r.top - ph - 8 + window.scrollY;
+    } else {
+      left = r.left + r.width / 2 - pw / 2;
+      top = r.bottom + 8;
+      if (left < 8) left = 8;
+      if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+      if (top + ph > window.innerHeight - 8) top = r.top - ph - 8;
+    }
+    popup.style.left = left + 'px';
+    popup.style.top = top + 'px';
+  }
+
+  // Taste evolution – Bump Chart (rank 1-5 per year)
+  const evo = data.evolution;
+  const evoImages = evo.images || {};
+  const evoYears = evo.labels;
+  const evoDatasets = evo.datasets;
+  const evoArtists = evo.artists;
+
+  // Compute ranks per year: for each year, sort artists by hours desc → rank 1-5
+  const rankData = {}; // { artist: [rank_or_null_per_year] }
+  const hoursData = {}; // { artist: [hours_per_year] }
+  evoArtists.forEach(a => {
+    rankData[a] = new Array(evoYears.length).fill(null);
+    hoursData[a] = evoDatasets[a] || new Array(evoYears.length).fill(0);
+  });
+  evoYears.forEach((year, yi) => {
+    const entries = evoArtists
+      .map(a => ({ artist: a, hours: (evoDatasets[a] || [])[yi] || 0 }))
+      .filter(e => e.hours > 0)
+      .sort((a, b) => b.hours - a.hours);
+    entries.slice(0, 5).forEach((e, rank) => { rankData[e.artist][yi] = rank + 1; });
+  });
+
+  // Helper: create circular canvas from image URL
+  function makeCircleImage(url, size) {
+    return new Promise(resolve => {
+      if (!url) { resolve(null); return; }
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = size; c.height = size;
+        const cx = c.getContext('2d');
+        cx.beginPath(); cx.arc(size/2, size/2, size/2, 0, Math.PI*2); cx.clip();
+        cx.drawImage(img, 0, 0, size, size);
+        resolve(c);
+      };
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  // Build datasets: one line per artist that appeared in top 5 at least once
+  const bumpDatasets = [];
+  const artistColorMap = {};
+  let colorIdx = 0;
+  const circlePromises = [];
+  const bumpArtistOrder = [];
+  evoArtists.forEach(a => {
+    if (!rankData[a].some(r => r !== null)) return;
+    bumpArtistOrder.push(a);
+    const color = PALETTE[colorIdx % PALETTE.length];
+    artistColorMap[a] = color;
+    colorIdx++;
+    circlePromises.push(makeCircleImage(evoImages[a], 40));
+    bumpDatasets.push({
+      label: a,
+      data: rankData[a],
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: 3,
+      pointRadius: 20,
+      pointHoverRadius: 24,
+      pointBackgroundColor: color,
+      pointBorderColor: '#1e1e1e',
+      pointBorderWidth: 2,
+      tension: 0.3,
+      spanGaps: true,
+      fill: false,
+      segment: {
+        borderDash: ctx => {
+          const d = ctx.chart.data.datasets[ctx.datasetIndex].data;
+          for (let i = ctx.p0DataIndex + 1; i < ctx.p1DataIndex; i++) {
+            if (d[i] === null) return [6, 4];
+          }
+          return undefined;
+        },
+        borderWidth: ctx => {
+          const d = ctx.chart.data.datasets[ctx.datasetIndex].data;
+          for (let i = ctx.p0DataIndex + 1; i < ctx.p1DataIndex; i++) {
+            if (d[i] === null) return 1.5;
+          }
+          return 3;
+        }
+      },
+    });
+  });
+
+  // Wait for all artist circle images, then assign as pointStyle and render chart
+  Promise.all(circlePromises).then(circles => {
+    circles.forEach((canvas, i) => {
+      if (canvas) bumpDatasets[i].pointStyle = canvas;
+    });
+
+    document.getElementById('chart-evolution').parentElement.style.height = '420px';
+
+    makeChart('chart-evolution', {
+      type: 'line',
+      data: { labels: evoYears.map(String), datasets: bumpDatasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: false,
+            external: function(context) {
+              const tooltip = context.tooltip;
+              if (tooltip.opacity === 0) { customTooltipEl.style.opacity = '0'; return; }
+              const dp = tooltip.dataPoints?.[0];
+              if (!dp) return;
+              const artist = dp.dataset.label;
+              const rank = dp.raw;
+              const yi = dp.dataIndex;
+              const hours = (hoursData[artist] || [])[yi] || 0;
+              const year = evoYears[yi];
+              const imgUrl = evoImages[artist] || '';
+              const imgHtml = imgUrl
+                ? `<img src="${imgUrl}" style="width:64px;height:64px;border-radius:50%;object-fit:cover;margin:0 auto 8px;">`
+                : `<div style="width:64px;height:64px;border-radius:50%;background:#333;margin:0 auto 8px;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:32px;height:32px;fill:#666"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg></div>`;
+              customTooltipEl.innerHTML = `${imgHtml}<div style="color:#fff;font-weight:600;font-size:0.9rem">${esc(artist)}</div><div style="color:#b3b3b3;font-size:0.8rem">#${rank} in ${year}</div><div style="color:#b3b3b3;font-size:0.8rem">${fmtDur(hours)} ${durLabel().toLowerCase()}</div>`;
+              const pos = context.chart.canvas.getBoundingClientRect();
+              customTooltipEl.style.opacity = '1';
+              customTooltipEl.style.left = pos.left + window.scrollX + tooltip.caretX - customTooltipEl.offsetWidth / 2 + 'px';
+              customTooltipEl.style.top = pos.top + window.scrollY + tooltip.caretY - customTooltipEl.offsetHeight - 10 + 'px';
+            }
+          }
+        },
+        scales: {
+          y: { reverse: true, min: 0.5, max: 5.5, grid: { color: '#222' },
+            ticks: { stepSize: 1, callback: v => v >= 1 && v <= 5 ? '#' + v : '' },
+            title: axisTitle('Rank') },
+          x: { grid: { display: false }, title: axisTitle('Year') }
+        }
+      }
+    });
   });
 
   showContent('timeline');
 }
 
 // ── Habits ────────────────────────────────────────────────────────────
+let habitsData = null;
+let hourlyMode = 'total';
+let dailyMode = 'total';
+
+function renderHourlyChart() {
+  if (!habitsData) return;
+  const vals = hourlyMode === 'avg' ? habitsData.hourly.avg_values : habitsData.hourly.values;
+  const label = hourlyMode === 'avg' ? `Avg ${durLabel()}/Day` : durLabel();
+  makeChart('chart-hourly', {
+    type: 'bar',
+    data: { labels: habitsData.hourly.labels, datasets: [{ data: vals.map(durVal), backgroundColor: vals.map(v => {
+      const max = Math.max(...vals); return `rgba(29,185,84,${0.2 + (max > 0 ? v/max : 0)*0.8})`;
+    }), borderRadius: 3 }] },
+    options: { responsive: true, plugins: { legend: { display: false } },
+      scales: { y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle(label) }, x: { grid: { display: false }, title: axisTitle('Hour of Day') } } }
+  });
+}
+
+function renderDailyChart() {
+  if (!habitsData) return;
+  const vals = dailyMode === 'avg' ? habitsData.daily.avg_values : habitsData.daily.values;
+  const label = dailyMode === 'avg' ? `Avg ${durLabel()}/Day` : durLabel();
+  makeChart('chart-daily', {
+    type: 'bar',
+    data: { labels: habitsData.daily.labels, datasets: [{ data: vals.map(durVal), backgroundColor: vals.map(v => {
+      const max = Math.max(...vals); return `rgba(29,185,84,${0.2 + (max > 0 ? v/max : 0)*0.8})`;
+    }), borderRadius: 3 }] },
+    options: { responsive: true, plugins: { legend: { display: false } },
+      scales: { y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle(label) }, x: { grid: { display: false }, title: axisTitle('Day') } } }
+  });
+}
+
+function setHourlyMode(mode) {
+  hourlyMode = mode;
+  document.querySelectorAll('#hourly-mode-switch .unit-opt').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  renderHourlyChart();
+}
+function setDailyMode(mode) {
+  dailyMode = mode;
+  document.querySelectorAll('#daily-mode-switch .unit-opt').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  renderDailyChart();
+}
+
 async function loadHabits() {
   showLoading('habits');
 
   const params = buildFilterParams('habits-year-btns');
   const data = await fetch('/api/habits?' + params).then(r => r.json());
+  habitsData = data;
 
   if (!yearsInitialized.habits && data.years) {
     setupYearButtons('habits-year-btns', data.years, loadHabits);
     yearsInitialized.habits = true;
   }
 
-  // Issue #9: stat cards row with 5 metrics
   document.getElementById('habits-stats').innerHTML =
     statCard(data.avg_track_min + ' min', 'Avg Track Duration') +
     statCard(data.total_listening_days.toLocaleString(), 'Listening Days') +
@@ -665,30 +1216,48 @@ async function loadHabits() {
     statCard(data.peak_hour, 'Peak Hour') +
     statCard(data.peak_day, 'Peak Day');
 
-  // Hourly
-  makeChart('chart-hourly', {
-    type: 'bar',
-    data: { labels: data.hourly.labels, datasets: [{ data: data.hourly.values, backgroundColor: data.hourly.values.map(v => {
-      const max = Math.max(...data.hourly.values); return `rgba(29,185,84,${0.2 + (v/max)*0.8})`;
-    }), borderRadius: 3 }] },
-    options: { responsive: true, plugins: { legend: { display: false } },
-      scales: { y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle('Hours') }, x: { grid: { display: false }, title: axisTitle('Hour of Day') } } }
-  });
+  renderHourlyChart();
+  renderDailyChart();
 
-  // Daily
-  makeChart('chart-daily', {
-    type: 'bar',
-    data: { labels: data.daily.labels, datasets: [{ data: data.daily.values, backgroundColor: data.daily.values.map(v => {
-      const max = Math.max(...data.daily.values); return `rgba(29,185,84,${0.2 + (v/max)*0.8})`;
-    }), borderRadius: 3 }] },
-    options: { responsive: true, plugins: { legend: { display: false } },
-      scales: { y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle('Hours') }, x: { grid: { display: false }, title: axisTitle('Day') } } }
-  });
+  // Skip rate as percentage
+  const skipYes = data.skip.labels.indexOf('Yes') >= 0 ? data.skip.values[data.skip.labels.indexOf('Yes')] : 0;
+  const skipTotal = data.skip.values.reduce((a, b) => a + b, 0);
+  const skipPct = skipTotal > 0 ? (skipYes / skipTotal * 100).toFixed(1) : '0';
+  document.getElementById('skip-stat').innerHTML = `<div class="text-center"><div style="font-size:2.5rem;font-weight:700;color:var(--spotify-green)">${skipPct}%</div><div class="text-sm text-gray-400 mt-1">of plays were skipped</div><div class="text-xs text-gray-500 mt-1">${skipYes.toLocaleString()} skips</div></div>`;
 
-  doughnutChart('chart-shuffle', data.shuffle.labels, data.shuffle.values);
-  doughnutChart('chart-skip', data.skip.labels, data.skip.values);
-  doughnutChart('chart-platform', data.platform.labels, data.platform.values,
-    data.platform.labels.map((_, i) => PALETTE[i % PALETTE.length]));
+  // Shuffle as percentage
+  const shuffleYes = data.shuffle.labels.indexOf('Yes') >= 0 ? data.shuffle.values[data.shuffle.labels.indexOf('Yes')] : 0;
+  const shuffleTotal = data.shuffle.values.reduce((a, b) => a + b, 0);
+  const shufflePct = shuffleTotal > 0 ? (shuffleYes / shuffleTotal * 100).toFixed(1) : '0';
+  document.getElementById('shuffle-stat').innerHTML = `<div class="text-center"><div style="font-size:2.5rem;font-weight:700;color:var(--spotify-green)">${shufflePct}%</div><div class="text-sm text-gray-400 mt-1">of plays were shuffled</div><div class="text-xs text-gray-500 mt-1">${shuffleYes.toLocaleString()} shuffled plays</div></div>`;
+
+  // Platform treemap
+  const platformTree = data.platform.labels.map((label, i) => ({ label, value: data.platform.values[i] }));
+  makeChart('chart-platform', {
+    type: 'treemap',
+    data: { datasets: [{
+      tree: platformTree,
+      key: 'value',
+      groups: ['label'],
+      backgroundColor: (ctx) => PALETTE[ctx.dataIndex % PALETTE.length],
+      borderWidth: 1,
+      borderColor: '#333',
+      labels: {
+        display: true,
+        color: '#fff',
+        font: { size: 11, weight: 'bold' },
+        formatter: (ctx) => ctx.type === 'data' ? [ctx.raw.g, ctx.raw.v.toLocaleString()] : ''
+      }
+    }] },
+    options: { responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { title: () => '', label: (ctx) => {
+          const total = platformTree.reduce((a, b) => a + b.value, 0);
+          return `${ctx.raw.g}: ${ctx.raw.v.toLocaleString()} (${(ctx.raw.v/total*100).toFixed(1)}%)`;
+        }}}
+      }
+    }
+  });
 
   showContent('habits');
 }
@@ -728,9 +1297,11 @@ document.addEventListener('click', e => {
 });
 
 async function selectArtist(name) {
+  currentArtist = name;
   searchInput.value = name;
   searchResults.classList.add('hidden');
   document.getElementById('deep-dive-content').classList.add('hidden');
+  document.getElementById('tab-deep-dive').style.overflow = 'visible';
 
   const data = await fetch('/api/artist/' + encodeURIComponent(name)).then(r => r.json());
   if (data.error) return;
@@ -739,7 +1310,7 @@ async function selectArtist(name) {
   document.getElementById('artist-hero-img').innerHTML = imgTag(data.artist_image, 140, true, name);
   document.getElementById('artist-stats').innerHTML =
     statCard(s.total_plays.toLocaleString(), 'Total Plays') +
-    statCard(s.total_hours + 'h', 'Total Hours') +
+    statCard(fmtDur(s.total_hours), 'Total ' + durLabel()) +
     statCard(s.first_listen, 'First Listen') +
     statCard(s.last_listen, 'Last Listen');
 
@@ -747,14 +1318,14 @@ async function selectArtist(name) {
   makeChart('chart-artist-monthly', {
     type: 'line',
     data: { labels: data.monthly.labels, datasets: [{
-      data: data.monthly.values, fill: true,
+      data: data.monthly.values.map(durVal), fill: true,
       backgroundColor: GREEN_15, borderColor: GREEN, borderWidth: 2, tension: 0.3, pointRadius: 0, pointHitRadius: 10
     }]},
     options: { responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: 15 }, title: axisTitle('Month') },
-        y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle('Hours') }
+        y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle(durLabel()) }
       }
     }
   });
@@ -773,13 +1344,13 @@ async function selectArtist(name) {
     return `<div style="flex:1;min-width:0;text-align:center;padding:0 6px;max-width:200px">
       ${imgHtml}
       <div class="text-sm font-medium mt-2" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(albumName)}">${esc(albumName)}</div>
-      <div class="text-xs text-gray-400">${hrs}h</div>
+      <div class="text-xs text-gray-400">${fmtDur(hrs)}</div>
     </div>`;
   }).join('');
 
   // Tracks table
   document.getElementById('artist-tracks-table').innerHTML = data.top_tracks.map((r, i) =>
-    `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3 font-medium">${esc(r.track)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${r.hours}</td></tr>`
+    `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3 font-medium">${esc(r.track)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`
   ).join('');
 
   document.getElementById('deep-dive-content').classList.remove('hidden');

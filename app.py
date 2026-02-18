@@ -7,10 +7,12 @@ Fetches artist/album images from Spotify API with SQLite caching.
 
 from __future__ import annotations
 
+import difflib
 import glob as globmod
 import os
 import re
 import sqlite3
+import calendar
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -79,6 +81,11 @@ def _init_image_db():
         image_url TEXT,
         fetched_at TEXT,
         PRIMARY KEY (album_name, artist_name)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS artist_genres (
+        artist_name TEXT PRIMARY KEY,
+        genres TEXT,
+        fetched_at TEXT
     )""")
     conn.commit()
     conn.close()
@@ -201,15 +208,34 @@ def _search_album_cover(sp, album: str, artist: str) -> str:
 
     # --- Strategy 5: Artist discography browse + fuzzy match ---
     try:
-        # Find the artist ID first
         artist_results = sp.search(q=f"artist:{artist}", type="artist", limit=1)
         artist_items = artist_results.get("artists", {}).get("items", [])
         if artist_items:
             artist_id = artist_items[0]["id"]
-            discography = sp.artist_albums(artist_id, album_type="album,single,compilation", limit=50)
+            # Paginate through discography (sp.artist_albums limit param is broken)
+            disc_items = []
+            url = f"artists/{artist_id}/albums"
+            while url and len(disc_items) < 100:
+                page = sp._get(url)
+                disc_items.extend(page.get("items", []))
+                url = page.get("next")
+                # _get needs full URL for 'next', so break and use offset if needed
+                if url:
+                    import requests as _req
+                    headers = {"Authorization": f"Bearer {sp.auth_manager.get_access_token(as_dict=False)}"}
+                    r = _req.get(url, headers=headers)
+                    if r.status_code == 200:
+                        page = r.json()
+                        disc_items.extend(page.get("items", []))
+                        url = page.get("next")
+                    else:
+                        break
+
             album_lower = album.lower()
             stripped_lower = stripped.lower()
-            for disc_album in discography.get("items", []):
+
+            # Pass 1: substring containment (fast, strict)
+            for disc_album in disc_items:
                 disc_name = disc_album["name"].lower()
                 disc_stripped = _strip_album_suffix(disc_name)
                 if (album_lower in disc_name or disc_name in album_lower
@@ -217,6 +243,28 @@ def _search_album_cover(sp, album: str, artist: str) -> str:
                     images = disc_album.get("images", [])
                     if images:
                         return images[1]["url"] if len(images) > 1 else images[0]["url"]
+
+            # Pass 2: fuzzy match — token overlap + sequence similarity
+            best_score, best_img = 0.0, ""
+            album_tokens = set(re.split(r'\W+', album_lower)) - {"", "the", "a", "an", "of"}
+            for disc_album in disc_items:
+                disc_name = disc_album["name"].lower()
+                disc_tokens = set(re.split(r'\W+', disc_name)) - {"", "the", "a", "an", "of"}
+                # Token overlap ratio
+                if album_tokens and disc_tokens:
+                    overlap = len(album_tokens & disc_tokens) / min(len(album_tokens), len(disc_tokens))
+                else:
+                    overlap = 0
+                # Sequence similarity
+                seq = difflib.SequenceMatcher(None, album_lower, disc_name).ratio()
+                score = max(overlap, seq)
+                if score > best_score:
+                    images = disc_album.get("images", [])
+                    if images:
+                        best_score = score
+                        best_img = images[1]["url"] if len(images) > 1 else images[0]["url"]
+            if best_score >= 0.4:
+                return best_img
     except Exception:
         pass
 
@@ -275,6 +323,47 @@ def _get_album_images_batch(albums: list[tuple[str, str]], cached_only: bool = F
 
 
 # ---------------------------------------------------------------------------
+# Genre cache
+# ---------------------------------------------------------------------------
+
+def _get_artist_genres_batch(names: list[str], cached_only: bool = False) -> dict[str, str]:
+    """Look up artist genres: DB first, API for misses. Returns {artist: primary_genre}."""
+    if not names:
+        return {}
+    conn = _get_db()
+    cached: dict[str, str] = {}
+    for name in names:
+        row = conn.execute("SELECT genres FROM artist_genres WHERE artist_name = ?", (name,)).fetchone()
+        if row is not None:
+            cached[name] = row[0]
+
+    misses = [n for n in names if n not in cached]
+    if misses and not cached_only:
+        sp = get_client_credentials_client()
+        now = datetime.now(timezone.utc).isoformat()
+        for name in misses:
+            try:
+                results = sp.search(q=f"artist:{name}", type="artist", limit=1)
+                items = results.get("artists", {}).get("items", [])
+                genres = items[0].get("genres", []) if items else []
+                genre_str = genres[0].title() if genres else "Other"
+                cached[name] = genre_str
+                conn.execute(
+                    "INSERT OR REPLACE INTO artist_genres (artist_name, genres, fetched_at) VALUES (?, ?, ?)",
+                    (name, genre_str, now),
+                )
+            except Exception:
+                cached[name] = "Other"
+                conn.execute(
+                    "INSERT OR REPLACE INTO artist_genres (artist_name, genres, fetched_at) VALUES (?, ?, ?)",
+                    (name, "Other", now),
+                )
+        conn.commit()
+    conn.close()
+    return cached
+
+
+# ---------------------------------------------------------------------------
 # Helpers (non-image)
 # ---------------------------------------------------------------------------
 
@@ -306,7 +395,13 @@ def _compute_habits(df: pd.DataFrame) -> dict:
     dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
     hourly = df.groupby("hour")["hours"].sum().reindex(range(24), fill_value=0).round(1)
+    # Average: total hours per bucket / number of unique dates with plays in that bucket
+    hourly_dates = df.groupby("hour")["ts"].apply(lambda x: x.dt.date.nunique()).reindex(range(24), fill_value=1)
+    hourly_avg = (hourly / hourly_dates).round(2)
+
     dow = df.groupby("day_of_week")["hours"].sum().reindex(dow_order, fill_value=0).round(1)
+    dow_dates = df.groupby("day_of_week")["ts"].apply(lambda x: x.dt.date.nunique()).reindex(dow_order, fill_value=1)
+    dow_avg = (dow / dow_dates).round(2)
 
     platform = df["platform"].map(_simplify_platform).value_counts()
 
@@ -322,10 +417,12 @@ def _compute_habits(df: pd.DataFrame) -> dict:
         "hourly": {
             "labels": [f"{h:02d}:00" for h in range(24)],
             "values": hourly.values.tolist(),
+            "avg_values": hourly_avg.values.tolist(),
         },
         "daily": {
             "labels": dow_order,
             "values": dow.values.tolist(),
+            "avg_values": dow_avg.values.tolist(),
         },
         "shuffle": _bool_counts(df, "shuffle"),
         "skip": _bool_counts(df, "skipped"),
@@ -501,13 +598,15 @@ async def top_artists(
     agg["hours"] = agg["hours"].round(1)
     rows = agg.reset_index()
 
-    # Batch fetch artist images (cached only for fast response)
+    # Batch fetch artist images and genres (cached only for fast response)
     names = rows["artist"].tolist()
     imgs = _get_artist_images_batch(names, cached_only=True)
+    genres = _get_artist_genres_batch(names, cached_only=True)
 
     table = rows.to_dict(orient="records")
     for row in table:
         row["image"] = imgs.get(row["artist"], "")
+        row["genre"] = genres.get(row["artist"], "")
 
     return {
         "chart": {
@@ -533,17 +632,56 @@ async def top_tracks(
     agg["hours"] = agg["hours"].round(1)
     rows = agg.reset_index()
 
-    # Batch fetch album images (cached only for fast response)
+    # Batch fetch album images and genres (cached only for fast response)
     albums = list(zip(rows["album"].tolist(), rows["artist"].tolist()))
     imgs = _get_album_images_batch(albums, cached_only=True)
+    artist_names = rows["artist"].unique().tolist()
+    genres = _get_artist_genres_batch(artist_names, cached_only=True)
 
     table = rows.to_dict(orient="records")
     for row in table:
         row["image"] = imgs.get((row["album"], row["artist"]), "")
+        row["genre"] = genres.get(row["artist"], "")
 
     return {
         "chart": {
             "labels": rows["track"].tolist(),
+            "values": [float(v) for v in rows["hours"]],
+        },
+        "table": table,
+    }
+
+
+@app.get("/api/top-albums")
+async def top_albums(
+    limit: int = Query(50, ge=1, le=500),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    years: Optional[str] = None,
+):
+    df = _filter_by_date(_df(), start_date, end_date, years)
+    agg = df.groupby(["album", "artist"]).agg(
+        plays=("track", "size"),
+        hours=("hours", "sum"),
+        tracks=("track", "nunique"),
+    ).sort_values("hours", ascending=False).head(limit)
+    agg["hours"] = agg["hours"].round(1)
+    rows = agg.reset_index()
+
+    # Batch fetch album images and genres (cached only for fast response)
+    albums = list(zip(rows["album"].tolist(), rows["artist"].tolist()))
+    imgs = _get_album_images_batch(albums, cached_only=True)
+    artist_names = rows["artist"].unique().tolist()
+    genres = _get_artist_genres_batch(artist_names, cached_only=True)
+
+    table = rows.to_dict(orient="records")
+    for row in table:
+        row["image"] = imgs.get((row["album"], row["artist"]), "")
+        row["genre"] = genres.get(row["artist"], "")
+
+    return {
+        "chart": {
+            "labels": rows["album"].tolist(),
             "values": [float(v) for v in rows["hours"]],
         },
         "table": table,
@@ -577,14 +715,44 @@ async def timeline(
         all_top_artists.update(top5.index)
 
     years_sorted = sorted(top_per_year.keys())
-    artist_list = sorted(all_top_artists)
+    artist_totals = {a: sum(top_per_year.get(y, {}).get(a, 0) for y in years_sorted) for a in all_top_artists}
+    artist_list = sorted(all_top_artists, key=lambda a: artist_totals[a], reverse=True)
+    # Collect all unique artists across all years for images
+    all_evo_artists = list(all_top_artists)
+    evo_imgs = _get_artist_images_batch(all_evo_artists, cached_only=True)
+
+    # Build Sankey flows: connect artists appearing in consecutive years
+    sankey_flows = []
+    for i, year in enumerate(years_sorted[:-1]):
+        next_year = years_sorted[i + 1]
+        for artist in top_per_year.get(year, {}):
+            if artist in top_per_year.get(next_year, {}):
+                sankey_flows.append({
+                    "from": f"{artist} ({year})",
+                    "to": f"{artist} ({next_year})",
+                    "flow": round(top_per_year[next_year][artist], 1),
+                })
+
+    # Build node info: every (artist, year) pair
+    sankey_nodes = {}
+    for year in years_sorted:
+        for artist, hours in top_per_year.get(year, {}).items():
+            sankey_nodes[f"{artist} ({year})"] = {
+                "artist": artist,
+                "year": year,
+                "hours": round(hours, 1),
+            }
+
     evolution = {
         "labels": years_sorted,
         "artists": artist_list,
+        "images": {a: evo_imgs.get(a, "") for a in all_evo_artists},
         "datasets": {
             a: [top_per_year.get(y, {}).get(a, 0) for y in years_sorted]
             for a in artist_list
         },
+        "sankey_flows": sankey_flows,
+        "sankey_nodes": sankey_nodes,
     }
 
     return {
@@ -593,6 +761,16 @@ async def timeline(
         "evolution": evolution,
         "years": _cache()["years"],
     }
+
+
+@app.get("/api/daily-heatmap")
+async def daily_heatmap(year: int = Query(...), month: int = Query(..., ge=1, le=12)):
+    df = _df()
+    mdf = df[(df["year"] == year) & (df["month"] == month)]
+    daily = mdf.groupby(mdf["ts"].dt.day)["hours"].sum().round(2)
+    days = {int(d): float(h) for d, h in daily.items()}
+    total_days = calendar.monthrange(year, month)[1]
+    return {"days": days, "total_days": total_days}
 
 
 @app.get("/api/habits")
@@ -708,3 +886,17 @@ async def resolve_images(request: Request):
         result["albums"] = {f"{a}||{b}": url for (a, b), url in imgs.items()}
 
     return result
+
+
+@app.post("/api/resolve-genres")
+async def resolve_genres(request: Request):
+    """Resolve uncached artist genres via Spotify API.
+
+    Body: {"artists": ["name1", ...]}
+    Returns: {"name1": "Genre", ...}
+    """
+    body = await request.json()
+    artist_names = body.get("artists", [])
+    if not artist_names:
+        return {}
+    return _get_artist_genres_batch(artist_names, cached_only=False)
