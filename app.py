@@ -108,21 +108,30 @@ def _get_artist_images_batch(names: list[str], cached_only: bool = False) -> dic
     ).fetchall()
     cached = {r[0]: r[1] for r in rows}
 
-    misses = [n for n in names if n not in cached]
+    misses = [n for n in names if not cached.get(n)]
     if misses and not cached_only:
         sp = get_client_credentials_client()
         now = datetime.now(timezone.utc).isoformat()
         for name in misses:
             url = ""
             try:
-                results = sp.search(q=f"artist:{name}", type="artist", limit=1)
+                results = sp.search(q=f"artist:{name}", type="artist", limit=5)
                 items = results.get("artists", {}).get("items", [])
-                if items and items[0].get("images"):
+                # Prefer exact name match (case-insensitive) over first result
+                match = None
+                for item in items:
+                    if item["name"].lower() == name.lower():
+                        match = item
+                        break
+                if not match and items:
+                    match = items[0]
+                if match and match.get("images"):
                     # Use 320px image (index 1) if available, else first
-                    images = items[0]["images"]
+                    images = match["images"]
                     url = images[1]["url"] if len(images) > 1 else images[0]["url"]
-            except Exception:
-                pass
+            except Exception as e:
+                if '429' in str(e) or 'rate' in str(e).lower():
+                    break  # Stop — all further calls will also fail
             cached[name] = url
             conn.execute(
                 "INSERT OR REPLACE INTO artist_images (artist_name, image_url, fetched_at) VALUES (?, ?, ?)",
@@ -290,21 +299,22 @@ def _get_album_images_batch(albums: list[tuple[str, str]], cached_only: bool = F
         if row is not None:
             cached[(album, artist)] = row[0]
 
-    misses = [a for a in albums if a not in cached]
+    misses = [a for a in albums if not cached.get(a)]
     if misses and not cached_only:
         sp = get_client_credentials_client()
         now = datetime.now(timezone.utc).isoformat()
 
         # Pre-fetch artist images for last-resort fallback
         miss_artists = list({artist for _, artist in misses})
-        artist_imgs = _get_artist_images_batch(miss_artists, cached_only=False)
+        artist_imgs = _get_artist_images_batch(miss_artists, cached_only=True)
 
         for album, artist in misses:
             url = ""
             try:
                 url = _search_album_cover(sp, album, artist)
-            except Exception:
-                pass
+            except Exception as e:
+                if '429' in str(e) or 'rate' in str(e).lower():
+                    break  # Stop — all further calls will also fail
 
             # --- Strategy 6: Fall back to artist image ---
             if not url:
@@ -632,15 +642,17 @@ async def top_tracks(
     agg["hours"] = agg["hours"].round(1)
     rows = agg.reset_index()
 
-    # Batch fetch album images and genres (cached only for fast response)
+    # Batch fetch album images, artist images, and genres (cached only for fast response)
     albums = list(zip(rows["album"].tolist(), rows["artist"].tolist()))
     imgs = _get_album_images_batch(albums, cached_only=True)
     artist_names = rows["artist"].unique().tolist()
+    artist_imgs = _get_artist_images_batch(artist_names, cached_only=True)
     genres = _get_artist_genres_batch(artist_names, cached_only=True)
 
     table = rows.to_dict(orient="records")
     for row in table:
         row["image"] = imgs.get((row["album"], row["artist"]), "")
+        row["artist_image"] = artist_imgs.get(row["artist"], "")
         row["genre"] = genres.get(row["artist"], "")
 
     return {
@@ -668,15 +680,17 @@ async def top_albums(
     agg["hours"] = agg["hours"].round(1)
     rows = agg.reset_index()
 
-    # Batch fetch album images and genres (cached only for fast response)
+    # Batch fetch album images, artist images, and genres (cached only for fast response)
     albums = list(zip(rows["album"].tolist(), rows["artist"].tolist()))
     imgs = _get_album_images_batch(albums, cached_only=True)
     artist_names = rows["artist"].unique().tolist()
+    artist_imgs = _get_artist_images_batch(artist_names, cached_only=True)
     genres = _get_artist_genres_batch(artist_names, cached_only=True)
 
     table = rows.to_dict(orient="records")
     for row in table:
         row["image"] = imgs.get((row["album"], row["artist"]), "")
+        row["artist_image"] = artist_imgs.get(row["artist"], "")
         row["genre"] = genres.get(row["artist"], "")
 
     return {

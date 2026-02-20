@@ -17,7 +17,8 @@ def get_client_credentials_client() -> spotipy.Spotify:
         auth_manager=SpotifyClientCredentials(
             client_id=os.getenv("SPOTIPY_CLIENT_ID"),
             client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
-        )
+        ),
+        retries=0,
     )
 
 

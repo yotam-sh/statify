@@ -1,0 +1,10 @@
+.env
+.git
+.gitignore
+.claude
+__pycache__
+*.pyc
+.spotify_cache
+.cache
+venv/
+.venv/

@@ -8,8 +8,8 @@ A personal Spotify listening analytics dashboard built with FastAPI and a single
 
 - **Dashboard** - Total plays, hours, unique artists/tracks, listening trend line chart, top 5 artists and tracks with progress bars and images
 - **Top Artists** - Treemap chart with artist photos as tile backgrounds, ranked table with images, filterable by year and limit (25/50/100)
-- **Top Albums** - Treemap chart with album cover art as tile backgrounds, ranked table with covers, filterable by year and limit
-- **Top Tracks** - Treemap chart with album art, ranked table, filterable by year and limit
+- **Top Albums** - Treemap chart grouped by artist with album cover art as tile backgrounds, dark banner group headers, ranked table with covers, filterable by year and limit
+- **Top Tracks** - Treemap chart grouped by album with album art, dark banner group headers, ranked table, filterable by year and limit
 - **Timeline** - Yearly hours bar chart, interactive monthly heatmap with daily drill-down popups, taste evolution bump chart showing top 5 artists per year with circular artist photos and rank lines
 - **Listening Habits** - Hour-of-day and day-of-week bar charts with Total/Average toggles, shuffle/skip percentage stats, platform treemap
 - **Artist Deep-Dive** - Search any artist for detailed stats, monthly listening timeline, top 5 album covers, and top tracks table
@@ -20,7 +20,8 @@ A personal Spotify listening analytics dashboard built with FastAPI and a single
 - **Year filter buttons** - Multi-select year filtering on all tabs, with "All Time" default and clear button
 - **Crosshair plugin** - Crosshair guides on chart hover for precise reading
 - **Loading states** - Spinner overlay on tab refresh, loading indicators on first visit
-- **Treemap image tiles** - Artist photos and album covers fill treemap tiles in cover mode with dark overlay for text readability
+- **Treemap image tiles** - Artist photos and album covers fill treemap tiles in cover mode with dark overlay for text readability; grouped treemaps show dark banner headers with dynamic font sizing
+- **Treemap tooltips** - Artist photos shown in Top Albums and Top Tracks tooltips; leaf-level targeting via `el.inRange()` for accurate hover detection
 - **Bump chart** - Taste evolution shown as rank lines (1-5) with circular artist photos at data points; solid lines for consecutive years, dashed lines when an artist drops out and returns
 - **Heatmap drill-down** - Click any monthly heatmap cell to see a daily breakdown popup with per-day listening hours
 
@@ -35,7 +36,7 @@ Artist photos and album covers are fetched from the Spotify Web API with a 6-lay
 5. Artist discography browse - fetches full discography and fuzzy-matches album names
 6. Artist image fallback - uses the artist's photo when no album art is found
 
-All results are cached in a local SQLite database (`data/image_cache.db`) so each lookup happens at most once. Pages load instantly with cached images; uncached images are resolved asynchronously in the background without blocking the UI.
+All results are cached in a local SQLite database (`data/image_cache.db`) so each lookup happens at most once. Pages load instantly with cached images; uncached images are resolved asynchronously in the background without blocking the UI. Rate-limited requests (429) break early to avoid cascading failures, and empty cache entries are automatically retried when the API becomes available.
 
 ## Setup
 
@@ -69,6 +70,14 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8000
 
 Open http://localhost:8000 in your browser.
 
+### Docker
+
+```bash
+docker compose up --build
+```
+
+The container mounts `./data` for persistent image cache and streaming history.
+
 ## Project Structure
 
 ```
@@ -80,6 +89,9 @@ spotify-tracker/
 │   ├── <YourName>/         # Extended streaming history JSON files
 │   └── image_cache.db      # SQLite cache for artist/album images (auto-created)
 ├── test_connection.py      # API connection & endpoint access test
+├── Dockerfile              # Container image definition
+├── docker-compose.yml      # Docker Compose service config
+├── .dockerignore           # Docker build exclusions
 ├── .env                    # API credentials (gitignored)
 ├── .env.example            # Credential template
 ├── requirements.txt
@@ -92,6 +104,7 @@ spotify-tracker/
 - **Frontend**: Vanilla JS, Tailwind CSS (CDN), Chart.js v4, chartjs-chart-treemap
 - **Image Cache**: SQLite with async background resolution
 - **API**: Spotify Web API (Client Credentials flow, no user login needed)
+- **Deployment**: Docker with volume-mounted data persistence
 
 ## Data Sources
 
