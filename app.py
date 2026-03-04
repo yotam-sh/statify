@@ -28,7 +28,7 @@ from spotify_client import get_client_credentials_client
 # Data loading & pre-computation
 # ---------------------------------------------------------------------------
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "Yotam")
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data", os.getenv("DATA_SUBDIR", "streaming"))
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "image_cache.db")
 
 

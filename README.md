@@ -110,7 +110,7 @@ spotify-tracker/
 
 | Source | Coverage |
 |---|---|
-| Extended streaming history | Every play from 2014-2026 with timestamps, durations, skip/shuffle flags, platform, country |
+| Extended streaming history | Every play with timestamps, durations, skip/shuffle flags, platform, country |
 | Spotify Web API | Album art, artist images, artist discographies |
 
 ## Credits
