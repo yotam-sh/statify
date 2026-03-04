@@ -698,6 +698,11 @@ async def index():
     return FileResponse(os.path.join(_BASE, "index.html"))
 
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.post("/api/auth/login")
 async def login(request: Request):
     body = await request.json()
