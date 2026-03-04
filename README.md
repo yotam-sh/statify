@@ -1,42 +1,39 @@
 # Spotify Stats Dashboard
 
-A personal Spotify listening analytics dashboard built with FastAPI and a single-page frontend, powered by 12 years of extended streaming history (2014-2026) and the Spotify Web API for artist/album imagery.
+A multi-user Spotify listening analytics dashboard built with FastAPI and a single-page frontend. Upload your Spotify Extended Streaming History and explore 12+ years of listening data with rich visualizations, artist imagery, and user comparison tools.
 
 ## Features
 
 ### Tabs
 
-- **Dashboard** - Total plays, hours, unique artists/tracks, listening trend line chart, top 5 artists and tracks with progress bars and images
-- **Top Artists** - Treemap chart with artist photos as tile backgrounds, ranked table with images, filterable by year and limit (25/50/100)
-- **Top Albums** - Treemap chart grouped by artist with album cover art as tile backgrounds, dark banner group headers, ranked table with covers, filterable by year and limit
-- **Top Tracks** - Treemap chart grouped by album with album art, dark banner group headers, ranked table, filterable by year and limit
-- **Timeline** - Yearly hours bar chart, interactive monthly heatmap with daily drill-down popups, taste evolution bump chart showing top 5 artists per year with circular artist photos and rank lines
-- **Listening Habits** - Hour-of-day and day-of-week bar charts with Total/Average toggles, shuffle/skip percentage stats, platform treemap
-- **Artist Deep-Dive** - Search any artist for detailed stats, monthly listening timeline, top 5 album covers, and top tracks table
+- **Dashboard** - Total plays, hours, unique artists/tracks, monthly trend chart, top 5 artists and tracks with images
+- **Top Artists** - Treemap with artist photos as tile backgrounds, ranked table with images, filterable by year and limit (25/50/100)
+- **Top Albums** - Treemap grouped by artist with album cover art, ranked table, filterable by year and limit
+- **Top Tracks** - Treemap grouped by album with album art, ranked table, filterable by year and limit
+- **Timeline** - Yearly bar chart, interactive monthly heatmap with daily drill-down popups, taste evolution bump chart showing top 5 artists per year with rank lines and artist photos
+- **Listening Habits** - Hour-of-day and day-of-week bar charts with Total/Average toggles, shuffle/skip stats, platform treemap
+- **Artist Deep-Dive** - Search any artist for detailed stats, monthly timeline, top albums, and top tracks
+- **Compare** - Side-by-side comparison of two users: shared artists/tracks, exclusive artists, and a 0–100 musical similarity score based on Jaccard overlap of top artists, tracks, and genres
 
-### UX Features
+### Auth & Multi-User
 
-- **Hours/Minutes toggle** - Switch between hours and minutes display globally from the navbar
-- **Year filter buttons** - Multi-select year filtering on all tabs, with "All Time" default and clear button
-- **Crosshair plugin** - Crosshair guides on chart hover for precise reading
-- **Loading states** - Spinner overlay on tab refresh, loading indicators on first visit
-- **Treemap image tiles** - Artist photos and album covers fill treemap tiles in cover mode with dark overlay for text readability; grouped treemaps show dark banner headers with dynamic font sizing
-- **Treemap tooltips** - Artist photos shown in Top Albums and Top Tracks tooltips; leaf-level targeting via `el.inRange()` for accurate hover detection
-- **Bump chart** - Taste evolution shown as rank lines (1-5) with circular artist photos at data points; solid lines for consecutive years, dashed lines when an artist drops out and returns
-- **Heatmap drill-down** - Click any monthly heatmap cell to see a daily breakdown popup with per-day listening hours
+- **Invite-only accounts** — admin creates users via `create_user.py` CLI
+- **JWT authentication** stored in HttpOnly cookies (7-day sessions)
+- **Per-user data** — each user's streaming history stored separately; data never crosses between accounts
+- **Per-user TTL cache** — DataFrames cached in memory for 10 minutes after last use, then evicted; server restarts clean
+- **Public profiles** — each user's data is viewable at `/api/u/{username}/...`
+
+### UX
+
+- **Hours/Minutes toggle** — switch display units globally from the user menu
+- **Year filter buttons** — multi-select year filtering on all tabs with "All Time" default
+- **Upload via UI** — drag & drop or file picker; re-upload anytime to update data
+- **Friendly upload errors** — validates zip structure, file naming, JSON schema, and Spotify column presence before accepting data
+- **User menu** — username + gear icon opens dropdown with unit toggle, upload, and logout
 
 ### Image System
 
-Artist photos and album covers are fetched from the Spotify Web API with a 6-layer fallback system to maximize cover art discovery:
-
-1. Strict album search (`album:{name} artist:{artist}`)
-2. Loose album search (`{album} {artist}`, filtered by artist)
-3. Stripped suffixes - removes `(Deluxe Edition)`, `[Remastered]`, etc. and retries
-4. Track-based search - searches as a track and extracts album art from the result
-5. Artist discography browse - fetches full discography and fuzzy-matches album names
-6. Artist image fallback - uses the artist's photo when no album art is found
-
-All results are cached in a local SQLite database (`data/image_cache.db`) so each lookup happens at most once. Pages load instantly with cached images; uncached images are resolved asynchronously in the background without blocking the UI. Rate-limited requests (429) break early to avoid cascading failures, and empty cache entries are automatically retried when the API becomes available.
+Artist photos and album covers are fetched from the Spotify Web API with a 6-layer fallback system, cached in SQLite so each lookup happens at most once. Images load asynchronously without blocking the UI.
 
 ## Setup
 
@@ -46,29 +43,37 @@ All results are cached in a local SQLite database (`data/image_cache.db`) so eac
 pip install -r requirements.txt
 ```
 
-### 2. Configure Spotify API credentials
-
-Copy the example env file and fill in your credentials from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard):
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your Client ID and Client Secret.
+Fill in your Spotify API credentials from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), and set strong values for `JWT_SECRET` and `ADMIN_SECRET`.
 
-### 3. Add your streaming data
-
-Place your Spotify extended streaming history JSON files in `data/<YourName>/`.
-
-To request your data: Spotify Settings > Privacy > Request your data > Extended streaming history.
-
-### 4. Run the dashboard
+### 3. Start the server
 
 ```bash
-python -m uvicorn app:app --host 127.0.0.1 --port 8000
+uvicorn app:app --reload
 ```
 
-Open http://localhost:8000 in your browser.
+The server creates `data/users.db` and `data/users/` automatically on first run.
+
+### 4. Create user accounts
+
+```bash
+python create_user.py add <username>    # prompts for password
+python create_user.py list              # show all users
+python create_user.py delete <username>
+```
+
+The `ADMIN_SECRET` in `.env` must match when creating users via the HTTP endpoint instead.
+
+### 5. Upload streaming data
+
+Log in at `http://localhost:8000`. On first login you'll see an upload screen — drag and drop your Spotify Extended Streaming History `.zip` file (the one containing `Streaming_History_Audio_*.json` files).
+
+To request your data: Spotify → Settings → Privacy → Download your data → **Extended streaming history** (not the basic export).
 
 ### Docker
 
@@ -76,34 +81,35 @@ Open http://localhost:8000 in your browser.
 docker compose up --build
 ```
 
-The container mounts `./data` for persistent image cache and streaming history.
+The container mounts `./data` for persistent storage.
 
 ## Project Structure
 
 ```
 spotify-tracker/
-├── app.py                  # FastAPI backend with all API endpoints
+├── app.py                  # FastAPI backend — auth, endpoints, analytics
 ├── index.html              # Single-page frontend (Tailwind CSS + Chart.js)
 ├── spotify_client.py       # Spotify API client wrapper (spotipy)
+├── create_user.py          # Admin CLI for managing user accounts
 ├── data/
-│   ├── <YourName>/         # Extended streaming history JSON files
-│   └── image_cache.db      # SQLite cache for artist/album images (auto-created)
-├── test_connection.py      # API connection & endpoint access test
-├── Dockerfile              # Container image definition
-├── docker-compose.yml      # Docker Compose service config
-├── .dockerignore           # Docker build exclusions
-├── .env                    # API credentials (gitignored)
-├── .env.example            # Credential template
-├── requirements.txt
-└── README.md
+│   ├── users/
+│   │   └── {user_id}/      # Per-user streaming history JSON files
+│   ├── users.db            # User accounts (SQLite, auto-created)
+│   └── image_cache.db      # Artist/album image cache (SQLite, auto-created)
+├── Dockerfile
+├── docker-compose.yml
+├── .env                    # Credentials (gitignored)
+├── .env.example
+└── requirements.txt
 ```
 
 ## Tech Stack
 
-- **Backend**: FastAPI, pandas, spotipy
+- **Backend**: FastAPI, pandas, spotipy, python-jose, bcrypt, cachetools
 - **Frontend**: Vanilla JS, Tailwind CSS (CDN), Chart.js v4, chartjs-chart-treemap
-- **Image Cache**: SQLite with async background resolution
-- **API**: Spotify Web API (Client Credentials flow, no user login needed)
+- **Storage**: SQLite (user accounts + image cache), per-user JSON files
+- **Auth**: JWT in HttpOnly cookie, bcrypt password hashing
+- **API**: Spotify Web API (Client Credentials flow for image/genre data)
 - **Deployment**: Docker with volume-mounted data persistence
 
 ## Data Sources
@@ -111,8 +117,4 @@ spotify-tracker/
 | Source | Coverage |
 |---|---|
 | Extended streaming history | Every play with timestamps, durations, skip/shuffle flags, platform, country |
-| Spotify Web API | Album art, artist images, artist discographies |
-
-## Credits
-
-Built by Yotam with assistance from [Claude Code](https://claude.ai/claude-code) (Anthropic).
+| Spotify Web API | Album art, artist images, artist genres, discographies |

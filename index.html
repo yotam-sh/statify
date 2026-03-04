@@ -56,6 +56,26 @@
   .refresh-overlay.visible { display: flex; align-items: center; justify-content: center; }
   .cog-spin { width: 32px; height: 32px; fill: var(--spotify-green); animation: spin 1.2s linear infinite; }
   ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: #1a1a1a; } ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+  /* Splash & upload modal */
+  .splash-screen { position: fixed; inset: 0; z-index: 200; background: var(--bg-dark); display: flex; align-items: center; justify-content: center; }
+  .upload-drop-zone { border: 2px dashed #444; border-radius: 12px; padding: 2.5rem 2rem; text-align: center; cursor: pointer; transition: all 0.2s; }
+  .upload-drop-zone:hover, .upload-drop-zone.drag-over { border-color: var(--spotify-green); background: rgba(29,185,84,0.05); }
+  .upload-modal-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; }
+  .auth-input { width: 100%; background: #282828; border: 1px solid #444; color: #fff; border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.95rem; margin-bottom: 0.75rem; outline: none; }
+  .auth-input:focus { border-color: var(--spotify-green); }
+  .auth-btn { width: 100%; background: var(--spotify-green); color: #000; border: none; border-radius: 8px; padding: 0.65rem; font-size: 0.95rem; font-weight: 700; cursor: pointer; transition: opacity 0.15s; }
+  .auth-btn:hover { opacity: 0.88; }
+  .user-menu-btn { background: transparent; border: 1px solid #444; color: #b3b3b3; border-radius: 8px; padding: 0.3rem 0.65rem; cursor: pointer; display: flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; transition: all 0.15s; }
+  .user-menu-btn:hover { border-color: var(--spotify-green); color: #fff; }
+  .user-menu-dropdown { position: absolute; right: 0; top: calc(100% + 6px); background: #282828; border: 1px solid #444; border-radius: 10px; min-width: 176px; padding: 8px; display: none; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  .user-menu-dropdown.open { display: block; }
+  .user-menu-item { width: 100%; background: transparent; border: none; color: #b3b3b3; text-align: left; padding: 0.45rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; gap: 0.5rem; transition: all 0.15s; }
+  .user-menu-item:hover { background: #333; color: #fff; }
+  .user-menu-logout:hover { background: transparent; color: #ff6b6b; }
+  .compare-card { background: var(--bg-card); border-radius: 12px; padding: 1.25rem; }
+  .sim-score { font-size: 3.5rem; font-weight: 800; color: var(--spotify-green); line-height: 1; }
+  .shared-artist-chip { display: flex; align-items: center; gap: 0.5rem; background: #282828; border-radius: 8px; padding: 0.4rem 0.75rem; font-size: 0.85rem; }
+  .shared-artist-chip img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: #333; }
 </style>
 <script>
 tailwind.config = {
@@ -64,6 +84,70 @@ tailwind.config = {
 </script>
 </head>
 <body class="min-h-screen">
+
+<!-- Login Screen -->
+<div id="login-screen" class="splash-screen" style="display:none">
+  <div class="card" style="max-width:380px;width:100%;margin:1rem;">
+    <div class="flex items-center gap-3 mb-6">
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="#1DB954"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381C8.64 5.801 15.6 6.06 20.04 8.7c.5.3.7.999.4 1.5-.301.42-1.02.599-1.459.48z"/></svg>
+      <div>
+        <h1 class="text-xl font-bold">Spotify Tracker</h1>
+        <p class="text-sm text-gray-400">Sign in to continue</p>
+      </div>
+    </div>
+    <form id="login-form" onsubmit="doLogin(event)">
+      <input id="login-username" class="auth-input" type="text" placeholder="Username" autocomplete="username" required>
+      <input id="login-password" class="auth-input" type="password" placeholder="Password" autocomplete="current-password" required>
+      <button type="submit" class="auth-btn">Sign in</button>
+    </form>
+    <div id="login-error" class="text-red-400 text-sm text-center mt-3 min-h-[1.25rem]"></div>
+  </div>
+</div>
+
+<!-- Splash Screen (shown when no data is loaded) -->
+<div id="splash-screen" class="splash-screen" style="display:none">
+  <div class="card" style="max-width:480px;width:100%;margin:1rem;">
+    <div class="flex items-center gap-3 mb-6">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="#1DB954"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381C8.64 5.801 15.6 6.06 20.04 8.7c.5.3.7.999.4 1.5-.301.42-1.02.599-1.459.48z"/></svg>
+      <div>
+        <h1 class="text-xl font-bold">Spotify Tracker</h1>
+        <p class="text-sm text-gray-400">Your personal listening dashboard</p>
+      </div>
+    </div>
+    <p class="text-sm text-gray-300 mb-1">To get started, upload your Spotify extended streaming history:</p>
+    <ol class="text-sm text-gray-400 mb-5 space-y-1 list-decimal list-inside">
+      <li>Open Spotify → Settings → Privacy → <strong class="text-gray-200">Download your data</strong></li>
+      <li>Request <strong class="text-gray-200">Extended streaming history</strong> (not the basic one)</li>
+      <li>Once received, upload the <strong class="text-gray-200">.zip</strong> file below</li>
+    </ol>
+    <div id="splash-drop-zone" class="upload-drop-zone mb-4">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="#666" class="mx-auto mb-2"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+      <p class="text-sm text-gray-400">Drag & drop your <span class="text-white font-medium">.zip</span> file here</p>
+      <p class="text-xs text-gray-500 mt-1">or click to browse</p>
+      <input id="splash-file-input" type="file" accept=".zip" class="hidden">
+    </div>
+    <div id="splash-status" class="text-sm text-center min-h-[1.5rem]"></div>
+    <div class="text-center mt-4">
+      <button onclick="doLogout()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Log out</button>
+    </div>
+  </div>
+</div>
+
+<!-- Upload Modal (for re-uploading from within the app) -->
+<div id="upload-modal" class="upload-modal-backdrop" style="display:none" onclick="if(event.target===this)closeUploadModal()">
+  <div class="card" style="max-width:420px;width:100%;margin:1rem;position:relative;">
+    <button onclick="closeUploadModal()" style="position:absolute;top:1rem;right:1rem;background:none;border:none;color:#888;font-size:1.25rem;cursor:pointer;line-height:1;">✕</button>
+    <h2 class="font-bold text-lg mb-1">Update your data</h2>
+    <p class="text-sm text-gray-400 mb-4">Upload a new Spotify extended history <strong class="text-gray-200">.zip</strong> to replace the current data.</p>
+    <div id="modal-drop-zone" class="upload-drop-zone mb-4">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="#666" class="mx-auto mb-2"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+      <p class="text-sm text-gray-400">Drag & drop your <span class="text-white font-medium">.zip</span> here</p>
+      <p class="text-xs text-gray-500 mt-1">or click to browse</p>
+      <input id="modal-file-input" type="file" accept=".zip" class="hidden">
+    </div>
+    <div id="modal-status" class="text-sm text-center min-h-[1.5rem]"></div>
+  </div>
+</div>
 
 <div id="refresh-overlay" class="refresh-overlay">
   <svg class="cog-spin" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>
@@ -84,10 +168,26 @@ tailwind.config = {
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="timeline">Timeline</button>
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="habits">Habits</button>
       <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="deep-dive">Artist Deep-Dive</button>
+      <button class="tab-btn px-3 py-4 text-sm text-gray-400" data-tab="compare">Compare</button>
     </div>
-    <div class="unit-switch">
-      <button class="unit-opt active" data-unit="h" onclick="setUnit(false)">Hours</button>
-      <button class="unit-opt" data-unit="m" onclick="setUnit(true)">Minutes</button>
+    <div id="nav-user-area" class="relative" style="display:none!important">
+      <button class="user-menu-btn" id="user-menu-trigger" onclick="toggleUserMenu()">
+        <span id="nav-username"></span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+      </button>
+      <div id="user-menu-dropdown" class="user-menu-dropdown">
+        <div style="padding:2px 4px 8px;border-bottom:1px solid #333;margin-bottom:6px">
+          <div class="unit-switch" style="width:100%">
+            <button class="unit-opt active" data-unit="h" onclick="setUnit(false)">Hours</button>
+            <button class="unit-opt" data-unit="m" onclick="setUnit(true)">Minutes</button>
+          </div>
+        </div>
+        <button class="user-menu-item" onclick="openUploadModal();closeUserMenu()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+          Upload data
+        </button>
+        <button class="user-menu-item user-menu-logout" onclick="doLogout()">Log out</button>
+      </div>
     </div>
   </div>
 </nav>
@@ -259,6 +359,72 @@ tailwind.config = {
           </tr></thead>
           <tbody id="artist-tracks-table"></tbody>
         </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Compare -->
+  <section id="tab-compare" class="hidden">
+    <div class="card mb-6">
+      <h2 class="text-lg font-bold mb-3">Compare with a friend</h2>
+      <div class="flex flex-wrap gap-3 items-end">
+        <div class="flex-1" style="min-width:160px">
+          <p class="text-xs text-gray-400 mb-1">Your username</p>
+          <input id="compare-user-a" type="text" class="filter-input w-full" placeholder="username_a">
+        </div>
+        <div class="flex-1" style="min-width:160px">
+          <p class="text-xs text-gray-400 mb-1">Friend's username</p>
+          <input id="compare-user-b" type="text" class="filter-input w-full" placeholder="username_b">
+        </div>
+        <button onclick="loadCompare()" class="auth-btn" style="width:auto;padding:0.5rem 1.5rem;">Compare</button>
+      </div>
+      <div id="compare-error" class="text-red-400 text-sm mt-2 min-h-[1.25rem]"></div>
+    </div>
+
+    <div id="compare-loading" class="hidden flex items-center justify-center py-20"><div class="loader"></div></div>
+
+    <div id="compare-results" class="hidden">
+      <!-- Similarity score -->
+      <div class="card mb-4 text-center">
+        <p class="text-sm text-gray-400 mb-1">Musical similarity</p>
+        <div class="sim-score" id="cmp-score">—</div>
+        <p class="text-xs text-gray-500 mt-1">out of 100</p>
+      </div>
+
+      <!-- Side-by-side stats -->
+      <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="compare-card">
+          <p id="cmp-name-a" class="font-bold text-green-400 mb-3"></p>
+          <div id="cmp-stats-a" class="space-y-1 text-sm"></div>
+        </div>
+        <div class="compare-card">
+          <p id="cmp-name-b" class="font-bold text-green-400 mb-3"></p>
+          <div id="cmp-stats-b" class="space-y-1 text-sm"></div>
+        </div>
+      </div>
+
+      <!-- Shared artists -->
+      <div class="card mb-4">
+        <h3 class="font-semibold mb-3">Artists you both love</h3>
+        <div id="cmp-shared-artists" class="flex flex-wrap gap-2"></div>
+      </div>
+
+      <!-- Only A / Only B -->
+      <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="card">
+          <h3 class="font-semibold mb-2 text-sm" id="cmp-only-a-title"></h3>
+          <ul id="cmp-only-a" class="text-sm text-gray-300 space-y-1"></ul>
+        </div>
+        <div class="card">
+          <h3 class="font-semibold mb-2 text-sm" id="cmp-only-b-title"></h3>
+          <ul id="cmp-only-b" class="text-sm text-gray-300 space-y-1"></ul>
+        </div>
+      </div>
+
+      <!-- Shared tracks -->
+      <div class="card">
+        <h3 class="font-semibold mb-3">Tracks you both play</h3>
+        <ul id="cmp-shared-tracks" class="space-y-1 text-sm text-gray-300"></ul>
       </div>
     </div>
   </section>
@@ -1517,8 +1683,214 @@ async function selectArtist(name) {
   resolveImages(missingArtist, missingAlbums);
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────
+// Intercept fetch to redirect to login on 401
+const _origFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const res = await _origFetch(...args);
+  const url = typeof args[0] === 'string' ? args[0] : (args[0].url || '');
+  if (res.status === 401 && !url.includes('/api/auth/')) {
+    showLogin();
+  }
+  return res;
+};
+
+function toggleUserMenu() {
+  document.getElementById('user-menu-dropdown').classList.toggle('open');
+}
+function closeUserMenu() {
+  document.getElementById('user-menu-dropdown').classList.remove('open');
+}
+document.addEventListener('click', e => {
+  const area = document.getElementById('nav-user-area');
+  if (area && !area.contains(e.target)) closeUserMenu();
+});
+
+function showLogin() {
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('splash-screen').style.display = 'none';
+  document.getElementById('nav-user-area').style.display = 'none';
+}
+function hideLogin() {
+  document.getElementById('login-screen').style.display = 'none';
+}
+
+async function doLogin(event) {
+  event.preventDefault();
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+
+  const res = await _origFetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    errEl.textContent = data.detail || 'Invalid username or password';
+    return;
+  }
+
+  const data = await res.json();
+  hideLogin();
+  document.getElementById('nav-username').textContent = '@' + data.username;
+  document.getElementById('nav-user-area').style.cssText = 'display:flex!important';
+
+  const { has_data } = await fetch('/api/status').then(r => r.json());
+  if (!has_data) showSplash(); else loadDashboard();
+}
+
+async function doLogout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  showLogin();
+  document.getElementById('login-password').value = '';
+}
+
+// ── Upload / splash ──────────────────────────────────────────────────
+function showSplash() {
+  document.getElementById('splash-screen').style.display = 'flex';
+}
+function hideSplash() {
+  document.getElementById('splash-screen').style.display = 'none';
+}
+function openUploadModal() {
+  document.getElementById('upload-modal').style.display = 'flex';
+}
+function closeUploadModal() {
+  document.getElementById('upload-modal').style.display = 'none';
+  document.getElementById('modal-status').textContent = '';
+}
+
+async function doUpload(file, statusEl, onSuccess) {
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    statusEl.innerHTML = '<span class="text-red-400">Please select a .zip file.</span>';
+    return;
+  }
+  statusEl.innerHTML = '<span class="text-gray-400">Uploading and processing… this may take a moment.</span>';
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (res.ok) {
+      statusEl.innerHTML = `<span class="text-green-400">✓ Loaded ${data.files_loaded} file(s). Loading dashboard…</span>`;
+      setTimeout(() => onSuccess(), 800);
+    } else {
+      statusEl.innerHTML = `<span class="text-red-400">Error: ${data.detail || data.error || 'Upload failed'}</span>`;
+    }
+  } catch {
+    statusEl.innerHTML = '<span class="text-red-400">Network error. Is the server running?</span>';
+  }
+}
+
+function setupDropZone(zoneId, inputId, statusId, onSuccess) {
+  const zone = document.getElementById(zoneId);
+  const input = document.getElementById(inputId);
+  const status = document.getElementById(statusId);
+
+  zone.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    if (input.files[0]) doUpload(input.files[0], status, onSuccess);
+  });
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) doUpload(file, status, onSuccess);
+  });
+}
+
+setupDropZone('splash-drop-zone', 'splash-file-input', 'splash-status', () => {
+  hideSplash();
+  loadDashboard();
+});
+setupDropZone('modal-drop-zone', 'modal-file-input', 'modal-status', () => {
+  closeUploadModal();
+  loadDashboard();
+});
+
+// ── Compare ───────────────────────────────────────────────────────────
+async function loadCompare() {
+  const userA = document.getElementById('compare-user-a').value.trim();
+  const userB = document.getElementById('compare-user-b').value.trim();
+  const errEl = document.getElementById('compare-error');
+  errEl.textContent = '';
+
+  if (!userA || !userB) { errEl.textContent = 'Please enter both usernames.'; return; }
+  if (userA === userB) { errEl.textContent = 'Enter two different usernames.'; return; }
+
+  document.getElementById('compare-loading').classList.remove('hidden');
+  document.getElementById('compare-results').classList.add('hidden');
+
+  const res = await fetch(`/api/compare/${encodeURIComponent(userA)}/${encodeURIComponent(userB)}`);
+  document.getElementById('compare-loading').classList.add('hidden');
+
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    errEl.textContent = d.detail || 'Could not load comparison.';
+    return;
+  }
+
+  const data = await res.json();
+  const { user_a, user_b, overlap } = data;
+
+  document.getElementById('cmp-score').textContent = overlap.similarity_score;
+  document.getElementById('cmp-name-a').textContent = '@' + user_a.username;
+  document.getElementById('cmp-name-b').textContent = '@' + user_b.username;
+
+  const fmtStats = (stats) => Object.entries({
+    'Total hours': stats.total_hours.toLocaleString(),
+    'Total plays': stats.total_plays.toLocaleString(),
+    'Unique artists': stats.unique_artists.toLocaleString(),
+    'Unique tracks': stats.unique_tracks.toLocaleString(),
+    'Listening since': stats.first_listen,
+  }).map(([k, v]) => `<div class="flex justify-between"><span class="text-gray-400">${k}</span><span>${v}</span></div>`).join('');
+
+  document.getElementById('cmp-stats-a').innerHTML = fmtStats(user_a.stats);
+  document.getElementById('cmp-stats-b').innerHTML = fmtStats(user_b.stats);
+
+  const sharedArtistsEl = document.getElementById('cmp-shared-artists');
+  sharedArtistsEl.innerHTML = overlap.shared_artists.length
+    ? overlap.shared_artists.map(a => `
+        <div class="shared-artist-chip">
+          ${a.image ? `<img src="${a.image}" alt="">` : '<div style="width:28px;height:28px;border-radius:50%;background:#333;flex-shrink:0"></div>'}
+          <span>${a.name}</span>
+        </div>`).join('')
+    : '<p class="text-gray-500 text-sm">No shared artists in top 100.</p>';
+
+  document.getElementById('cmp-only-a-title').textContent = `Only @${user_a.username} listens to`;
+  document.getElementById('cmp-only-b-title').textContent = `Only @${user_b.username} listens to`;
+  document.getElementById('cmp-only-a').innerHTML = overlap.only_a.map(a => `<li>${a}</li>`).join('') || '<li class="text-gray-500">—</li>';
+  document.getElementById('cmp-only-b').innerHTML = overlap.only_b.map(a => `<li>${a}</li>`).join('') || '<li class="text-gray-500">—</li>';
+
+  document.getElementById('cmp-shared-tracks').innerHTML = overlap.shared_tracks.length
+    ? overlap.shared_tracks.map(t => `<li><span class="text-white">${t.track}</span> <span class="text-gray-500">— ${t.artist}</span></li>`).join('')
+    : '<li class="text-gray-500">No shared tracks in top 50.</li>';
+
+  document.getElementById('compare-results').classList.remove('hidden');
+}
+
 // ── Init ─────────────────────────────────────────────────────────────
-loadDashboard();
+async function initApp() {
+  const meRes = await _origFetch('/api/auth/me');
+  if (!meRes.ok) {
+    showLogin();
+    return;
+  }
+  const me = await meRes.json();
+  document.getElementById('nav-username').textContent = '@' + me.username;
+  document.getElementById('nav-user-area').style.cssText = 'display:flex!important';
+  document.getElementById('compare-user-a').value = me.username;
+
+  const { has_data } = await fetch('/api/status').then(r => r.json());
+  if (!has_data) showSplash(); else loadDashboard();
+}
+initApp();
 </script>
 </body>
 </html>
