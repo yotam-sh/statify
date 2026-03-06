@@ -1,4 +1,4 @@
-"""Spotify Tracker – FastAPI backend.
+"""Statify – FastAPI backend.
 
 Loads extended streaming history JSON files, pre-computes aggregations,
 and serves data through API endpoints consumed by a single-page frontend.
@@ -15,6 +15,8 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
+import sys
 import calendar
 import time
 import uuid
@@ -27,7 +29,12 @@ from typing import Optional
 import pandas as pd
 from cachetools import TTLCache
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from jose import JWTError, jwt
 import bcrypt as _bcrypt_lib
 
@@ -42,10 +49,24 @@ DB_PATH      = os.path.join(_BASE, "data", "image_cache.db")
 USERS_DB     = os.path.join(_BASE, "data", "users.db")
 USERS_DIR    = os.path.join(_BASE, "data", "users")
 
-JWT_SECRET    = os.getenv("JWT_SECRET", "change-me-in-production")
+JWT_SECRET    = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_DAYS = 7
 ADMIN_SECRET  = os.getenv("ADMIN_SECRET", "")
+
+_MISSING_SECRETS: list[str] = []
+if not JWT_SECRET:
+    _MISSING_SECRETS.append("JWT_SECRET")
+if not ADMIN_SECRET:
+    _MISSING_SECRETS.append("ADMIN_SECRET")
+if _MISSING_SECRETS:
+    import sys
+    print(
+        f"FATAL: required environment variable(s) not set: {', '.join(_MISSING_SECRETS)}\n"
+        "Set them in a .env file or as environment variables before starting the server.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 # Per-user TTL cache: keeps DataFrames + precomputed caches for 10 min of inactivity
 _user_cache: TTLCache = TTLCache(maxsize=50, ttl=600)
@@ -676,25 +697,71 @@ def _require_user_data(user_id: str) -> dict:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+def _build_frontend() -> None:
+    """Run `npm run build` if dist/ is missing. Called from lifespan."""
+    nm = os.path.join(_BASE, "node_modules")
+    if not os.path.isdir(nm):
+        print(
+            "WARNING: node_modules not found. "
+            "Run 'npm install && npm run build' before starting the server.",
+            file=sys.stderr,
+        )
+        return
+    print("dist/ not found — building frontend (npm run build)…", flush=True)
+    try:
+        result = subprocess.run(
+            ["npm", "run", "build"],
+            cwd=_BASE,
+            timeout=180,
+        )
+        if result.returncode == 0:
+            print("Frontend build complete.", flush=True)
+        else:
+            print("WARNING: Frontend build failed — app may not render correctly.", file=sys.stderr)
+    except FileNotFoundError:
+        print(
+            "WARNING: npm not found. Install Node.js and run 'npm install && npm run build'.",
+            file=sys.stderr,
+        )
+    except subprocess.TimeoutExpired:
+        print("WARNING: Frontend build timed out.", file=sys.stderr)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Init databases on startup."""
+    """Init databases and build frontend on startup."""
     os.makedirs(USERS_DIR, exist_ok=True)
     _init_image_db()
     _init_users_db()
+    # Auto-build frontend if dist/ is missing
+    if not os.path.isfile(_DIST_INDEX):
+        _build_frontend()
+    # Mount compiled assets (may have just been built above)
+    if os.path.isdir(_DIST_ASSETS):
+        application.mount("/assets", StaticFiles(directory=_DIST_ASSETS), name="assets")
     print(f"Ready. Users DB: {USERS_DB}  Image cache: {DB_PATH}")
     yield
 
 
-app = FastAPI(title="Spotify Tracker", lifespan=lifespan)
+_limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(title="Statify", lifespan=lifespan)
+app.state.limiter = _limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
 # ---------------------------------------------------------------------------
 # Routes — static & auth
 # ---------------------------------------------------------------------------
 
+_DIST_INDEX = os.path.join(_BASE, "dist", "index.html")
+_DIST_ASSETS = os.path.join(_BASE, "dist", "assets")
+
+
 @app.get("/")
 async def index():
+    if os.path.isfile(_DIST_INDEX):
+        return FileResponse(_DIST_INDEX)
     return FileResponse(os.path.join(_BASE, "index.html"))
 
 
@@ -704,6 +771,7 @@ async def health():
 
 
 @app.post("/api/auth/login")
+@_limiter.limit("10/minute")
 async def login(request: Request):
     body = await request.json()
     username = (body.get("username") or "").strip()

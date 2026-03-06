@@ -1,0 +1,22 @@
+# Replace example.com with your domain, or use ":80" for HTTP-only local use.
+# Caddy auto-provisions TLS via Let's Encrypt when a real domain is used.
+# Set CADDY_HOST env var to your domain (e.g. "mysite.example.com") or leave
+# as default "localhost" for local testing (HTTP only, no TLS).
+{$CADDY_HOST:localhost} {
+
+  # Security headers
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+
+  # Proxy everything to FastAPI backend
+  reverse_proxy spotify-tracker:8000 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+}

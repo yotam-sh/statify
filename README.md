@@ -1,6 +1,6 @@
-# Spotify Stats Dashboard
+# Statify
 
-A multi-user Spotify listening analytics dashboard built with FastAPI and a single-page frontend. Upload your Spotify Extended Streaming History and explore 12+ years of listening data with rich visualizations, artist imagery, and user comparison tools.
+A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite-powered single-page frontend. Upload your Spotify Extended Streaming History and explore years of listening data with rich visualizations, artist imagery, and user comparison tools.
 
 ## Features
 
@@ -13,23 +13,24 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a sing
 - **Timeline** - Yearly bar chart, interactive monthly heatmap with daily drill-down popups, taste evolution bump chart showing top 5 artists per year with rank lines and artist photos
 - **Listening Habits** - Hour-of-day and day-of-week bar charts with Total/Average toggles, shuffle/skip stats, platform treemap
 - **Artist Deep-Dive** - Search any artist for detailed stats, monthly timeline, top albums, and top tracks
-- **Compare** - Side-by-side comparison of two users: shared artists/tracks, exclusive artists, and a 0–100 musical similarity score based on Jaccard overlap of top artists, tracks, and genres
+- **Compare** - Side-by-side comparison of two users: shared artists/tracks, exclusive artists, and a 0-100 musical similarity score based on Jaccard overlap of top artists, tracks, and genres
 
 ### Auth & Multi-User
 
-- **Invite-only accounts** — admin creates users via `create_user.py` CLI
+- **Invite-only accounts** - admin creates users via `create_user.py` CLI
 - **JWT authentication** stored in HttpOnly cookies (7-day sessions)
-- **Per-user data** — each user's streaming history stored separately; data never crosses between accounts
-- **Per-user TTL cache** — DataFrames cached in memory for 10 minutes after last use, then evicted; server restarts clean
-- **Public profiles** — each user's data is viewable at `/api/u/{username}/...`
+- **Per-user data** - each user's streaming history stored separately; data never crosses between accounts
+- **Per-user TTL cache** - DataFrames cached in memory for 10 minutes after last use, then evicted; server restarts clean
+- **Public profiles** - each user's data is viewable at `/api/u/{username}/...`
 
 ### UX
 
-- **Hours/Minutes toggle** — switch display units globally from the user menu
-- **Year filter buttons** — multi-select year filtering on all tabs with "All Time" default
-- **Upload via UI** — drag & drop or file picker; re-upload anytime to update data
-- **Friendly upload errors** — validates zip structure, file naming, JSON schema, and Spotify column presence before accepting data
-- **User menu** — username + gear icon opens dropdown with unit toggle, upload, and logout
+- **Hours/Minutes toggle** - switch display units globally from the user menu
+- **Year filter buttons** - multi-select year filtering on all tabs with "All Time" default
+- **Upload via UI** - drag & drop or file picker; re-upload anytime to update data
+- **Friendly upload errors** - validates zip structure, file naming, JSON schema, and Spotify column presence before accepting data
+- **User menu** - username + gear icon opens dropdown with unit toggle, upload, and logout
+- **Mobile-responsive** - charts adapt to portrait/landscape viewports; tab bar scrolls on small screens
 
 ### Image System
 
@@ -37,13 +38,20 @@ Artist photos and album covers are fetched from the Spotify Web API with a 6-lay
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment
+### 2. Install frontend dependencies and build
+
+```bash
+npm install
+npm run build
+```
+
+### 3. Configure environment
 
 ```bash
 cp .env.example .env
@@ -51,15 +59,22 @@ cp .env.example .env
 
 Fill in your Spotify API credentials from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), and set strong values for `JWT_SECRET` and `ADMIN_SECRET`.
 
-### 3. Start the server
+### 4. Start the server
 
 ```bash
 uvicorn app:app --reload
 ```
 
-The server creates `data/users.db` and `data/users/` automatically on first run.
+The server creates `data/users.db` and `data/users/` automatically on first run and serves the built frontend from `dist/`.
 
-### 4. Create user accounts
+For development with hot-reload on the frontend, run both in parallel:
+
+```bash
+npm run dev          # Vite dev server on :5173 (proxies /api to :8000)
+uvicorn app:app --reload --port 8000
+```
+
+### 5. Create user accounts
 
 ```bash
 python create_user.py add <username>    # prompts for password
@@ -69,11 +84,11 @@ python create_user.py delete <username>
 
 The `ADMIN_SECRET` in `.env` must match when creating users via the HTTP endpoint instead.
 
-### 5. Upload streaming data
+### 6. Upload streaming data
 
-Log in at `http://localhost:8000`. On first login you'll see an upload screen — drag and drop your Spotify Extended Streaming History `.zip` file (the one containing `Streaming_History_Audio_*.json` files).
+Log in at `http://localhost:8000`. On first login you'll see an upload screen - drag and drop your Spotify Extended Streaming History `.zip` file (the one containing `Streaming_History_Audio_*.json` files).
 
-To request your data: Spotify → Settings → Privacy → Download your data → **Extended streaming history** (not the basic export).
+To request your data: Spotify > Settings > Privacy > Download your data > **Extended streaming history** (not the basic export).
 
 ### Docker
 
@@ -81,23 +96,38 @@ To request your data: Spotify → Settings → Privacy → Download your data �
 docker compose up --build
 ```
 
-The container mounts `./data` for persistent storage.
+Set `CADDY_HOST` in your environment to your domain and Caddy will handle TLS automatically. The container mounts `./data` for persistent storage.
 
 ## Project Structure
 
 ```
-spotify-tracker/
-├── app.py                  # FastAPI backend — auth, endpoints, analytics
-├── index.html              # Single-page frontend (Tailwind CSS + Chart.js)
+statify/
+├── app.py                  # FastAPI backend - auth, endpoints, analytics
 ├── spotify_client.py       # Spotify API client wrapper (spotipy)
 ├── create_user.py          # Admin CLI for managing user accounts
+├── index.html              # SPA entry point
+├── src/
+│   ├── app.js              # Frontend ES module (Chart.js, all UI logic)
+│   └── styles.css          # Tailwind directives + custom CSS
+├── asset/
+│   ├── logo.svg            # App icon (favicon)
+│   └── logo_with_name.svg  # Full logo used in navbar, login, and splash
+├── tests/
+│   └── responsive.spec.js  # Playwright responsive layout tests
 ├── data/
 │   ├── users/
 │   │   └── {user_id}/      # Per-user streaming history JSON files
 │   ├── users.db            # User accounts (SQLite, auto-created)
 │   └── image_cache.db      # Artist/album image cache (SQLite, auto-created)
+├── dist/                   # Built frontend output (gitignored)
 ├── Dockerfile
 ├── docker-compose.yml
+├── Caddyfile
+├── vite.config.js
+├── tailwind.config.js
+├── postcss.config.js
+├── package.json
+├── playwright.config.js
 ├── .env                    # Credentials (gitignored)
 ├── .env.example
 └── requirements.txt
@@ -105,12 +135,13 @@ spotify-tracker/
 
 ## Tech Stack
 
-- **Backend**: FastAPI, pandas, spotipy, python-jose, bcrypt, cachetools
-- **Frontend**: Vanilla JS, Tailwind CSS (CDN), Chart.js v4, chartjs-chart-treemap
+- **Backend**: FastAPI, pandas, spotipy, python-jose, bcrypt, cachetools, slowapi
+- **Frontend**: ES module (Vite), Tailwind CSS v3, Chart.js v4, chartjs-chart-treemap
 - **Storage**: SQLite (user accounts + image cache), per-user JSON files
-- **Auth**: JWT in HttpOnly cookie, bcrypt password hashing
+- **Auth**: JWT in HttpOnly cookie, bcrypt password hashing, rate-limited login endpoint
 - **API**: Spotify Web API (Client Credentials flow for image/genre data)
-- **Deployment**: Docker with volume-mounted data persistence
+- **Deployment**: Docker multi-stage build, Caddy reverse proxy with automatic TLS
+- **Testing**: Playwright across 6 viewport profiles (portrait/landscape phone, tablet, desktop)
 
 ## Data Sources
 

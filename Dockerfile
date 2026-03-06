@@ -1,3 +1,14 @@
+# ── Stage 1: Build frontend ──────────────────────────────────────────
+FROM node:20-slim AS frontend
+
+WORKDIR /build
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY index.html vite.config.js tailwind.config.js postcss.config.js ./
+COPY src/ ./src/
+RUN npm run build
+
+# ── Stage 2: Python runtime ──────────────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -6,6 +17,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=frontend /build/dist ./dist
 
 RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
 USER appuser

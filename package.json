@@ -1,0 +1,24 @@
+{
+  "name": "spotify-tracker",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "playwright test",
+    "test:report": "playwright show-report"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.0",
+    "chartjs-chart-treemap": "^3.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.10"
+  }
+}
