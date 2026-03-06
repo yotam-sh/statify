@@ -18,7 +18,12 @@
     </div>
     <form id="login-form" onsubmit="doLogin(event)">
       <input id="login-username" class="auth-input" type="text" placeholder="Username" autocomplete="username" required>
-      <input id="login-password" class="auth-input" type="password" placeholder="Password" autocomplete="current-password" required>
+      <div class="relative" style="margin-bottom:0.75rem">
+        <input id="login-password" class="auth-input" style="margin-bottom:0;padding-right:2.5rem" type="password" placeholder="Password" autocomplete="current-password" required>
+        <button type="button" onclick="togglePasswordVisibility()" tabindex="-1" aria-label="Show password" style="position:absolute;right:0.6rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#888;padding:0;display:flex;align-items:center">
+          <svg id="eye-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
       <button type="submit" class="auth-btn">Sign in</button>
     </form>
     <div id="login-error" class="text-red-400 text-sm text-center mt-3 min-h-[1.25rem]"></div>
@@ -107,6 +112,7 @@
       <button class="tab-btn px-3 py-3 text-sm text-gray-400" data-tab="habits">Habits</button>
       <button class="tab-btn px-3 py-3 text-sm text-gray-400" data-tab="deep-dive">Artist Deep-Dive</button>
       <button class="tab-btn px-3 py-3 text-sm text-gray-400" data-tab="compare">Compare</button>
+      <button class="tab-btn px-3 py-3 text-sm text-gray-400" data-tab="admin" id="tab-btn-admin" style="display:none">Admin</button>
     </div>
   </div>
 </nav>
@@ -346,6 +352,115 @@
         <ul id="cmp-shared-tracks" class="space-y-1 text-sm text-gray-300"></ul>
       </div>
     </div>
+  </section>
+
+
+  <!-- Admin Panel -->
+  <section id="tab-admin" class="hidden">
+
+    <!-- Impersonation banner -->
+    <div id="admin-impersonation-bar" class="hidden mb-4 flex items-center gap-3 bg-yellow-900/40 border border-yellow-600/40 rounded-xl px-4 py-2 text-sm">
+      <span class="text-yellow-300">Viewing as <strong id="admin-viewing-as-name"></strong></span>
+      <button onclick="adminStopImpersonating()" class="ml-auto text-yellow-400 hover:text-white text-xs border border-yellow-600/50 rounded px-2 py-1">Stop viewing</button>
+    </div>
+
+    <!-- Admin sub-nav pills -->
+    <div class="flex gap-2 mb-6 flex-wrap">
+      <button class="admin-pill active year-btn" data-panel="overview" onclick="adminShowPanel('overview')">Overview</button>
+      <button class="admin-pill year-btn" data-panel="users" onclick="adminShowPanel('users')">Users</button>
+      <button class="admin-pill year-btn" data-panel="image-cache" onclick="adminShowPanel('image-cache')">Image Cache</button>
+      <button class="admin-pill year-btn" data-panel="bulk-refresh" onclick="adminShowPanel('bulk-refresh')">Bulk Refresh</button>
+    </div>
+
+    <!-- Overview panel -->
+    <div id="admin-panel-overview">
+      <div id="admin-overview-content" class="grid grid-cols-2 md:grid-cols-3 gap-4"></div>
+    </div>
+
+    <!-- Users panel -->
+    <div id="admin-panel-users" class="hidden">
+      <div class="card overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-gray-400 border-b border-white/10">
+            <th class="py-2 px-3">Username</th>
+            <th class="py-2 px-3 text-center">Public</th>
+            <th class="py-2 px-3 text-center">Files</th>
+            <th class="py-2 px-3">Created</th>
+            <th class="py-2 px-3 text-right">Actions</th>
+          </tr></thead>
+          <tbody id="admin-users-table"></tbody>
+        </table>
+      </div>
+      <!-- Reset password modal -->
+      <div id="admin-reset-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+        <div class="card" style="min-width:320px;max-width:90vw">
+          <h3 class="font-semibold mb-3">Reset Password</h3>
+          <p class="text-sm text-gray-400 mb-3">New password for <strong id="admin-reset-username"></strong></p>
+          <input id="admin-reset-pw" type="password" class="auth-input" placeholder="New password (min 8 chars)">
+          <div class="flex gap-2 mt-2">
+            <button onclick="adminConfirmReset()" class="auth-btn" style="width:auto;padding:0.5rem 1.25rem">Save</button>
+            <button onclick="document.getElementById('admin-reset-modal').classList.add('hidden')" class="year-btn-clear">Cancel</button>
+          </div>
+          <p id="admin-reset-error" class="text-red-400 text-xs mt-2 min-h-[1rem]"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Image Cache panel -->
+    <div id="admin-panel-image-cache" class="hidden">
+      <div class="flex flex-wrap gap-2 mb-4 items-center">
+        <div class="unit-switch">
+          <button class="unit-opt active" data-cache-type="artist" onclick="adminSetCacheType('artist')">Artists</button>
+          <button class="unit-opt" data-cache-type="album" onclick="adminSetCacheType('album')">Albums</button>
+        </div>
+        <input id="admin-cache-search" class="filter-input" placeholder="Search…" oninput="adminLoadImageCache(1)">
+      </div>
+      <div class="card overflow-x-auto mb-4">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-gray-400 border-b border-white/10">
+            <th class="py-2 px-3 w-14">Image</th>
+            <th class="py-2 px-3">Name</th>
+            <th class="py-2 px-3 hidden md:table-cell">Fetched</th>
+            <th class="py-2 px-3 text-right">Actions</th>
+          </tr></thead>
+          <tbody id="admin-cache-table"></tbody>
+        </table>
+      </div>
+      <div id="admin-cache-pagination" class="flex gap-2 items-center text-sm text-gray-400 mb-6"></div>
+
+      <!-- Fix image panel -->
+      <div class="card">
+        <h3 class="font-semibold mb-3">Fix an Image</h3>
+        <p class="text-xs text-gray-400 mb-3">Search Spotify for an artist or album, pick the right image, and save it to the cache.</p>
+        <div class="flex gap-2 mb-3">
+          <input id="admin-fix-query" class="filter-input flex-1" placeholder="Artist or album name…">
+          <div class="unit-switch">
+            <button class="unit-opt active" data-fix-type="artist" onclick="adminSetFixType('artist')">Artist</button>
+            <button class="unit-opt" data-fix-type="album" onclick="adminSetFixType('album')">Album</button>
+          </div>
+          <button onclick="adminSearchImage()" class="year-btn">Search</button>
+        </div>
+        <div id="admin-fix-target" class="text-xs text-gray-400 mb-2 hidden">
+          Overriding: <strong id="admin-fix-target-name"></strong>
+          <button onclick="adminClearFixTarget()" class="ml-2 text-gray-500 hover:text-white">[clear]</button>
+        </div>
+        <div id="admin-search-results" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3"></div>
+      </div>
+    </div>
+
+    <!-- Bulk Refresh panel -->
+    <div id="admin-panel-bulk-refresh" class="hidden">
+      <div class="card max-w-lg">
+        <h3 class="font-semibold mb-2">Bulk Refresh Empty Images</h3>
+        <p class="text-sm text-gray-400 mb-4">Re-fetches all artist or album entries in the cache that currently have an empty image URL. This calls the Spotify API and may take a while.</p>
+        <div class="flex gap-3 flex-wrap">
+          <button onclick="adminBulkRefresh('artist')" class="year-btn">Refresh empty artists</button>
+          <button onclick="adminBulkRefresh('album')" class="year-btn">Refresh empty albums</button>
+        </div>
+        <p id="admin-refresh-status" class="text-sm mt-4 min-h-[1.5rem]"></p>
+      </div>
+    </div>
+
   </section>
 
 </main>

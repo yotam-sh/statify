@@ -53,6 +53,8 @@ JWT_SECRET    = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_DAYS = 7
 ADMIN_SECRET  = os.getenv("ADMIN_SECRET", "")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
+_SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true"
 
 _MISSING_SECRETS: list[str] = []
 if not JWT_SECRET:
@@ -72,6 +74,19 @@ if _MISSING_SECRETS:
 _user_cache: TTLCache = TTLCache(maxsize=50, ttl=600)
 _user_locks: dict[str, Lock] = {}
 _user_locks_mutex = Lock()
+
+# Per-key in-process locks — prevent duplicate Spotify API calls for the same artist/album
+_artist_img_locks: dict[str, Lock] = {}
+_album_img_locks:  dict[str, Lock] = {}
+_genre_locks:      dict[str, Lock] = {}
+_fetch_locks_mutex = Lock()
+
+
+def _get_fetch_lock(lock_dict: dict[str, Lock], key: str) -> Lock:
+    with _fetch_locks_mutex:
+        if key not in lock_dict:
+            lock_dict[key] = Lock()
+        return lock_dict[key]
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +242,10 @@ def _db_create_user(username: str, password: str) -> dict:
 
 def _create_token(user_id: str, username: str) -> str:
     exp = datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRE_DAYS)
-    return jwt.encode(
-        {"sub": user_id, "username": username, "exp": exp},
-        JWT_SECRET,
-        algorithm=JWT_ALGORITHM,
-    )
+    payload: dict = {"sub": user_id, "username": username, "exp": exp}
+    if ADMIN_USERNAME and username == ADMIN_USERNAME:
+        payload["is_admin"] = True
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def _decode_token(token: str) -> dict:
@@ -257,6 +271,12 @@ async def get_optional_user(auth_token: Optional[str] = Cookie(None)) -> dict | 
         return None
 
 
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    return user
+
+
 # ---------------------------------------------------------------------------
 # Image cache (SQLite + Spotify API)
 # ---------------------------------------------------------------------------
@@ -264,6 +284,7 @@ async def get_optional_user(auth_token: Optional[str] = Cookie(None)) -> dict | 
 def _init_image_db():
     """Create the image cache database and tables if they don't exist."""
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS artist_images (
         artist_name TEXT PRIMARY KEY,
         image_url TEXT,
@@ -306,33 +327,45 @@ def _get_artist_images_batch(names: list[str], cached_only: bool = False) -> dic
     if misses and not cached_only:
         sp = get_client_credentials_client()
         now = datetime.now(timezone.utc).isoformat()
+        rate_limited = False
         for name in misses:
-            url = ""
-            try:
-                results = sp.search(q=f"artist:{name}", type="artist", limit=5)
-                items = results.get("artists", {}).get("items", [])
-                # Prefer exact name match (case-insensitive) over first result
-                match = None
-                for item in items:
-                    if item["name"].lower() == name.lower():
-                        match = item
-                        break
-                if not match and items:
-                    match = items[0]
-                if match and match.get("images"):
-                    # Use 320px image (index 1) if available, else first
-                    images = match["images"]
-                    url = images[1]["url"] if len(images) > 1 else images[0]["url"]
-            except Exception as e:
-                if '429' in str(e) or 'rate' in str(e).lower():
-                    break  # Stop — all further calls will also fail
-            cached[name] = url
-            conn.execute(
-                "INSERT OR REPLACE INTO artist_images (artist_name, image_url, fetched_at) VALUES (?, ?, ?)",
-                (name, url, now),
-            )
-            time.sleep(0.05)  # Rate limiting
-        conn.commit()
+            if rate_limited:
+                break
+            lock = _get_fetch_lock(_artist_img_locks, name.lower())
+            with lock:
+                # Double-check: another thread may have populated the DB while we waited
+                row = conn.execute(
+                    "SELECT image_url FROM artist_images WHERE artist_name = ?", (name,)
+                ).fetchone()
+                if row is not None:
+                    cached[name] = row[0]
+                    continue
+                url = ""
+                try:
+                    results = sp.search(q=f"artist:{name}", type="artist", limit=5)
+                    items = results.get("artists", {}).get("items", [])
+                    # Prefer exact name match (case-insensitive) over first result
+                    match = None
+                    for item in items:
+                        if item["name"].lower() == name.lower():
+                            match = item
+                            break
+                    if not match and items:
+                        match = items[0]
+                    if match and match.get("images"):
+                        # Use 320px image (index 1) if available, else first
+                        images = match["images"]
+                        url = images[1]["url"] if len(images) > 1 else images[0]["url"]
+                except Exception as e:
+                    if '429' in str(e) or 'rate' in str(e).lower():
+                        rate_limited = True
+                cached[name] = url
+                conn.execute(
+                    "INSERT OR REPLACE INTO artist_images (artist_name, image_url, fetched_at) VALUES (?, ?, ?)",
+                    (name, url, now),
+                )
+                conn.commit()
+                time.sleep(0.05)  # Rate limiting
 
     conn.close()
     return {n: cached.get(n, "") for n in names}
@@ -491,24 +524,38 @@ def _get_album_images_batch(albums: list[tuple[str, str]], cached_only: bool = F
         miss_artists = list({artist for _, artist in misses})
         artist_imgs = _get_artist_images_batch(miss_artists, cached_only=True)
 
+        rate_limited = False
         for album, artist in misses:
-            url = ""
-            try:
-                url = _search_album_cover(sp, album, artist)
-            except Exception as e:
-                if '429' in str(e) or 'rate' in str(e).lower():
-                    break
+            if rate_limited:
+                break
+            lock_key = f"{album}||{artist}"
+            lock = _get_fetch_lock(_album_img_locks, lock_key)
+            with lock:
+                # Double-check: another thread may have populated the DB while we waited
+                row = conn.execute(
+                    "SELECT image_url FROM album_images WHERE album_name = ? AND artist_name = ?",
+                    (album, artist),
+                ).fetchone()
+                if row is not None:
+                    cached[(album, artist)] = row[0]
+                    continue
+                url = ""
+                try:
+                    url = _search_album_cover(sp, album, artist)
+                except Exception as e:
+                    if '429' in str(e) or 'rate' in str(e).lower():
+                        rate_limited = True
 
-            if not url:
-                url = artist_imgs.get(artist, "")
+                if not url:
+                    url = artist_imgs.get(artist, "")
 
-            cached[(album, artist)] = url
-            conn.execute(
-                "INSERT OR REPLACE INTO album_images (album_name, artist_name, image_url, fetched_at) VALUES (?, ?, ?, ?)",
-                (album, artist, url, now),
-            )
-            time.sleep(0.05)
-        conn.commit()
+                cached[(album, artist)] = url
+                conn.execute(
+                    "INSERT OR REPLACE INTO album_images (album_name, artist_name, image_url, fetched_at) VALUES (?, ?, ?, ?)",
+                    (album, artist, url, now),
+                )
+                conn.commit()
+                time.sleep(0.05)
 
     conn.close()
     return {a: cached.get(a, "") for a in albums}
@@ -534,23 +581,32 @@ def _get_artist_genres_batch(names: list[str], cached_only: bool = False) -> dic
         sp = get_client_credentials_client()
         now = datetime.now(timezone.utc).isoformat()
         for name in misses:
-            try:
-                results = sp.search(q=f"artist:{name}", type="artist", limit=1)
-                items = results.get("artists", {}).get("items", [])
-                genres = items[0].get("genres", []) if items else []
-                genre_str = genres[0].title() if genres else "Other"
-                cached[name] = genre_str
-                conn.execute(
-                    "INSERT OR REPLACE INTO artist_genres (artist_name, genres, fetched_at) VALUES (?, ?, ?)",
-                    (name, genre_str, now),
-                )
-            except Exception:
-                cached[name] = "Other"
-                conn.execute(
-                    "INSERT OR REPLACE INTO artist_genres (artist_name, genres, fetched_at) VALUES (?, ?, ?)",
-                    (name, "Other", now),
-                )
-        conn.commit()
+            lock = _get_fetch_lock(_genre_locks, name.lower())
+            with lock:
+                # Double-check: another thread may have populated the DB while we waited
+                row = conn.execute(
+                    "SELECT genres FROM artist_genres WHERE artist_name = ?", (name,)
+                ).fetchone()
+                if row is not None:
+                    cached[name] = row[0]
+                    continue
+                try:
+                    results = sp.search(q=f"artist:{name}", type="artist", limit=1)
+                    items = results.get("artists", {}).get("items", [])
+                    genres = items[0].get("genres", []) if items else []
+                    genre_str = genres[0].title() if genres else "Other"
+                    cached[name] = genre_str
+                    conn.execute(
+                        "INSERT OR REPLACE INTO artist_genres (artist_name, genres, fetched_at) VALUES (?, ?, ?)",
+                        (name, genre_str, now),
+                    )
+                except Exception:
+                    cached[name] = "Other"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO artist_genres (artist_name, genres, fetched_at) VALUES (?, ?, ?)",
+                        (name, "Other", now),
+                    )
+                conn.commit()
     conn.close()
     return cached
 
@@ -787,6 +843,7 @@ async def login(request: Request):
         "auth_token", token,
         httponly=True,
         samesite="lax",
+        secure=_SECURE_COOKIES,
         max_age=60 * 60 * 24 * JWT_EXPIRE_DAYS,
     )
     return response
@@ -801,7 +858,7 @@ async def logout():
 
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return {"user_id": user["sub"], "username": user["username"]}
+    return {"user_id": user["sub"], "username": user["username"], "is_admin": bool(user.get("is_admin"))}
 
 
 @app.post("/admin/create-user")
@@ -826,6 +883,251 @@ async def create_user(request: Request):
 
     os.makedirs(_user_data_dir(user["user_id"]), exist_ok=True)
     return {"ok": True, "user_id": user["user_id"], "username": user["username"]}
+
+
+# ---------------------------------------------------------------------------
+# Routes — admin panel API  (all require is_admin in JWT)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/overview")
+async def admin_overview(_: dict = Depends(require_admin)):
+    uconn = _get_users_db()
+    user_count = uconn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    uconn.close()
+
+    iconn = _get_db()
+    artist_cached  = iconn.execute("SELECT COUNT(*) FROM artist_images").fetchone()[0]
+    album_cached   = iconn.execute("SELECT COUNT(*) FROM album_images").fetchone()[0]
+    genre_cached   = iconn.execute("SELECT COUNT(*) FROM artist_genres").fetchone()[0]
+    empty_artists  = iconn.execute("SELECT COUNT(*) FROM artist_images WHERE image_url = ''").fetchone()[0]
+    empty_albums   = iconn.execute("SELECT COUNT(*) FROM album_images WHERE image_url = ''").fetchone()[0]
+    iconn.close()
+
+    return {
+        "users": user_count,
+        "artist_images_cached": artist_cached,
+        "album_images_cached": album_cached,
+        "artist_genres_cached": genre_cached,
+        "empty_artist_images": empty_artists,
+        "empty_album_images": empty_albums,
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(_: dict = Depends(require_admin)):
+    uconn = _get_users_db()
+    rows = uconn.execute(
+        "SELECT user_id, username, is_public, created_at FROM users ORDER BY created_at"
+    ).fetchall()
+    uconn.close()
+    result = []
+    for user_id, username, is_public, created_at in rows:
+        data_dir = _user_data_dir(user_id)
+        file_count = len(globmod.glob(os.path.join(data_dir, "Streaming_History_Audio_*.json")))
+        result.append({
+            "user_id": user_id,
+            "username": username,
+            "is_public": bool(is_public),
+            "created_at": created_at,
+            "file_count": file_count,
+        })
+    return result
+
+
+@app.patch("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: str, request: Request, _: dict = Depends(require_admin)):
+    body = await request.json()
+    uconn = _get_users_db()
+    row = uconn.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if not row:
+        uconn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    if "is_public" in body:
+        uconn.execute("UPDATE users SET is_public = ? WHERE user_id = ?", (int(bool(body["is_public"])), user_id))
+    uconn.commit()
+    uconn.close()
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: str, request: Request, _: dict = Depends(require_admin)):
+    body = await request.json()
+    password = body.get("password", "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    pw_hash = _bcrypt_lib.hashpw(password.encode(), _bcrypt_lib.gensalt()).decode()
+    uconn = _get_users_db()
+    row = uconn.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if not row:
+        uconn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    uconn.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (pw_hash, user_id))
+    uconn.commit()
+    uconn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
+    if user_id == admin["sub"]:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    uconn = _get_users_db()
+    row = uconn.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if not row:
+        uconn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    uconn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+    uconn.commit()
+    uconn.close()
+    # Remove data directory and evict TTL cache
+    data_dir = _user_data_dir(user_id)
+    if os.path.isdir(data_dir):
+        shutil.rmtree(data_dir)
+    _user_cache.pop(user_id, None)
+    return {"ok": True}
+
+
+@app.get("/api/admin/image-cache")
+async def admin_image_cache(
+    type: str = Query("artist", pattern="^(artist|album)$"),
+    q: str = Query(""),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    _: dict = Depends(require_admin),
+):
+    offset = (page - 1) * limit
+    iconn = _get_db()
+    if type == "artist":
+        search = f"%{q}%" if q else "%"
+        total = iconn.execute(
+            "SELECT COUNT(*) FROM artist_images WHERE artist_name LIKE ?", (search,)
+        ).fetchone()[0]
+        rows = iconn.execute(
+            "SELECT artist_name, image_url, fetched_at FROM artist_images WHERE artist_name LIKE ? ORDER BY artist_name LIMIT ? OFFSET ?",
+            (search, limit, offset),
+        ).fetchall()
+        items = [{"artist_name": r[0], "image_url": r[1], "fetched_at": r[2]} for r in rows]
+    else:
+        search = f"%{q}%" if q else "%"
+        total = iconn.execute(
+            "SELECT COUNT(*) FROM album_images WHERE album_name LIKE ? OR artist_name LIKE ?", (search, search)
+        ).fetchone()[0]
+        rows = iconn.execute(
+            "SELECT album_name, artist_name, image_url, fetched_at FROM album_images WHERE album_name LIKE ? OR artist_name LIKE ? ORDER BY artist_name, album_name LIMIT ? OFFSET ?",
+            (search, search, limit, offset),
+        ).fetchall()
+        items = [{"album_name": r[0], "artist_name": r[1], "image_url": r[2], "fetched_at": r[3]} for r in rows]
+    iconn.close()
+    return {"total": total, "page": page, "limit": limit, "items": items}
+
+
+@app.delete("/api/admin/image-cache/artist/{name}")
+async def admin_delete_artist_image(name: str, _: dict = Depends(require_admin)):
+    iconn = _get_db()
+    iconn.execute("DELETE FROM artist_images WHERE artist_name = ?", (name,))
+    iconn.commit()
+    iconn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/admin/image-cache/album")
+async def admin_delete_album_image(request: Request, _: dict = Depends(require_admin)):
+    body = await request.json()
+    album, artist = body.get("album", ""), body.get("artist", "")
+    iconn = _get_db()
+    iconn.execute("DELETE FROM album_images WHERE album_name = ? AND artist_name = ?", (album, artist))
+    iconn.commit()
+    iconn.close()
+    return {"ok": True}
+
+
+@app.put("/api/admin/image-cache/artist/{name}")
+async def admin_set_artist_image(name: str, request: Request, _: dict = Depends(require_admin)):
+    body = await request.json()
+    image_url = body.get("image_url", "")
+    now = datetime.now(timezone.utc).isoformat()
+    iconn = _get_db()
+    iconn.execute(
+        "INSERT OR REPLACE INTO artist_images (artist_name, image_url, fetched_at) VALUES (?, ?, ?)",
+        (name, image_url, now),
+    )
+    iconn.commit()
+    iconn.close()
+    return {"ok": True}
+
+
+@app.put("/api/admin/image-cache/album")
+async def admin_set_album_image(request: Request, _: dict = Depends(require_admin)):
+    body = await request.json()
+    album, artist, image_url = body.get("album", ""), body.get("artist", ""), body.get("image_url", "")
+    now = datetime.now(timezone.utc).isoformat()
+    iconn = _get_db()
+    iconn.execute(
+        "INSERT OR REPLACE INTO album_images (album_name, artist_name, image_url, fetched_at) VALUES (?, ?, ?, ?)",
+        (album, artist, image_url, now),
+    )
+    iconn.commit()
+    iconn.close()
+    return {"ok": True}
+
+
+@app.get("/api/admin/image-cache/search")
+async def admin_search_image(
+    q: str = Query(..., min_length=1),
+    type: str = Query("artist", pattern="^(artist|album)$"),
+    _: dict = Depends(require_admin),
+):
+    sp = get_client_credentials_client()
+    results = []
+    try:
+        if type == "artist":
+            data = sp.search(q=f"artist:{q}", type="artist", limit=5)
+            for item in data.get("artists", {}).get("items", []):
+                images = item.get("images", [])
+                url = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
+                results.append({"name": item["name"], "id": item["id"], "image": url})
+        else:
+            data = sp.search(q=f"album:{q}", type="album", limit=5)
+            for item in data.get("albums", {}).get("items", []):
+                images = item.get("images", [])
+                url = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
+                artist = item["artists"][0]["name"] if item.get("artists") else ""
+                results.append({"name": item["name"], "artist": artist, "id": item["id"], "image": url})
+    except Exception:
+        pass
+    return results
+
+
+@app.post("/api/admin/image-cache/refresh-empty")
+async def admin_refresh_empty(
+    type: str = Query("artist", pattern="^(artist|album)$"),
+    _: dict = Depends(require_admin),
+):
+    iconn = _get_db()
+    if type == "artist":
+        rows = iconn.execute("SELECT artist_name FROM artist_images WHERE image_url = ''").fetchall()
+        iconn.close()
+        names = [r[0] for r in rows]
+        before = len(names)
+        if names:
+            _get_artist_images_batch(names, cached_only=False)
+        iconn2 = _get_db()
+        still_empty = iconn2.execute(
+            f"SELECT COUNT(*) FROM artist_images WHERE image_url = '' AND artist_name IN ({','.join('?' for _ in names)})",
+            names,
+        ).fetchone()[0] if names else 0
+        iconn2.close()
+    else:
+        rows = iconn.execute("SELECT album_name, artist_name FROM album_images WHERE image_url = ''").fetchall()
+        iconn.close()
+        albums = [(r[0], r[1]) for r in rows]
+        before = len(albums)
+        if albums:
+            _get_album_images_batch(albums, cached_only=False)
+        iconn2 = _get_db()
+        still_empty = iconn2.execute("SELECT COUNT(*) FROM album_images WHERE image_url = ''").fetchone()[0]
+        iconn2.close()
+    return {"attempted": before, "still_empty": still_empty, "refreshed": before - still_empty}
 
 
 # ---------------------------------------------------------------------------
@@ -1045,24 +1347,25 @@ async def resolve_genres(
 # Routes — public profiles
 # ---------------------------------------------------------------------------
 
-def _resolve_public_user(username: str) -> dict:
-    """Look up user by username and verify they are public. Raises 404 otherwise."""
+def _resolve_public_user(username: str, viewer: dict | None = None) -> dict:
+    """Look up user by username and verify they are public (or viewer is admin)."""
     user = _db_get_user_by_username(username)
-    if not user or not user["is_public"]:
+    is_admin_viewer = viewer and viewer.get("is_admin")
+    if not user or (not user["is_public"] and not is_admin_viewer):
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
 
 @app.get("/api/u/{username}/status")
-async def public_status(username: str):
-    user = _resolve_public_user(username)
+async def public_status(username: str, viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     data = _get_user_data(user["user_id"])
     return {"username": username, "has_data": data is not None}
 
 
 @app.get("/api/u/{username}/dashboard")
-async def public_dashboard(username: str):
-    user = _resolve_public_user(username)
+async def public_dashboard(username: str, viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     ud = _get_user_data(user["user_id"])
     if ud is None:
         raise HTTPException(status_code=404, detail="No data for this user")
@@ -1070,8 +1373,8 @@ async def public_dashboard(username: str):
 
 
 @app.get("/api/u/{username}/top-artists")
-async def public_top_artists(username: str, limit: int = Query(50, ge=1, le=500)):
-    user = _resolve_public_user(username)
+async def public_top_artists(username: str, limit: int = Query(50, ge=1, le=500), viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     ud = _get_user_data(user["user_id"])
     if ud is None:
         raise HTTPException(status_code=404, detail="No data for this user")
@@ -1079,8 +1382,8 @@ async def public_top_artists(username: str, limit: int = Query(50, ge=1, le=500)
 
 
 @app.get("/api/u/{username}/top-tracks")
-async def public_top_tracks(username: str, limit: int = Query(50, ge=1, le=500)):
-    user = _resolve_public_user(username)
+async def public_top_tracks(username: str, limit: int = Query(50, ge=1, le=500), viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     ud = _get_user_data(user["user_id"])
     if ud is None:
         raise HTTPException(status_code=404, detail="No data for this user")
@@ -1088,8 +1391,8 @@ async def public_top_tracks(username: str, limit: int = Query(50, ge=1, le=500))
 
 
 @app.get("/api/u/{username}/top-albums")
-async def public_top_albums(username: str, limit: int = Query(50, ge=1, le=500)):
-    user = _resolve_public_user(username)
+async def public_top_albums(username: str, limit: int = Query(50, ge=1, le=500), viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     ud = _get_user_data(user["user_id"])
     if ud is None:
         raise HTTPException(status_code=404, detail="No data for this user")
@@ -1097,8 +1400,8 @@ async def public_top_albums(username: str, limit: int = Query(50, ge=1, le=500))
 
 
 @app.get("/api/u/{username}/timeline")
-async def public_timeline(username: str):
-    user = _resolve_public_user(username)
+async def public_timeline(username: str, viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     ud = _get_user_data(user["user_id"])
     if ud is None:
         raise HTTPException(status_code=404, detail="No data for this user")
@@ -1106,8 +1409,8 @@ async def public_timeline(username: str):
 
 
 @app.get("/api/u/{username}/habits")
-async def public_habits(username: str):
-    user = _resolve_public_user(username)
+async def public_habits(username: str, viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     ud = _get_user_data(user["user_id"])
     if ud is None:
         raise HTTPException(status_code=404, detail="No data for this user")
@@ -1117,8 +1420,8 @@ async def public_habits(username: str):
 
 
 @app.get("/api/u/{username}/artist/{artist_name}")
-async def public_artist_detail(username: str, artist_name: str):
-    user = _resolve_public_user(username)
+async def public_artist_detail(username: str, artist_name: str, viewer: dict | None = Depends(get_optional_user)):
+    user = _resolve_public_user(username, viewer)
     ud = _get_user_data(user["user_id"])
     if ud is None:
         raise HTTPException(status_code=404, detail="No data for this user")
@@ -1130,9 +1433,9 @@ async def public_artist_detail(username: str, artist_name: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/compare/{username_a}/{username_b}")
-async def compare(username_a: str, username_b: str):
-    user_a = _resolve_public_user(username_a)
-    user_b = _resolve_public_user(username_b)
+async def compare(username_a: str, username_b: str, viewer: dict | None = Depends(get_optional_user)):
+    user_a = _resolve_public_user(username_a, viewer)
+    user_b = _resolve_public_user(username_b, viewer)
 
     ud_a = _get_user_data(user_a["user_id"])
     ud_b = _get_user_data(user_b["user_id"])

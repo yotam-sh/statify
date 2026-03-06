@@ -7,6 +7,8 @@ services:
       - ./data:/app/data
     env_file:
       - .env
+    environment:
+      - SECURE_COOKIES=true
     restart: on-failure
 
   caddy:

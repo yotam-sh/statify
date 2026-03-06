@@ -22,6 +22,7 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
 - **Per-user data** - each user's streaming history stored separately; data never crosses between accounts
 - **Per-user TTL cache** - DataFrames cached in memory for 10 minutes after last use, then evicted; server restarts clean
 - **Public profiles** - each user's data is viewable at `/api/u/{username}/...`
+- **In-app Admin panel** - admin user can view system overview stats, manage users (toggle public flag, reset password, delete), impersonate any user to browse their data, browse and edit the image cache, search Spotify for replacement images, and bulk-refresh empty image entries
 
 ### UX
 
@@ -57,7 +58,7 @@ npm run build
 cp .env.example .env
 ```
 
-Fill in your Spotify API credentials from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), and set strong values for `JWT_SECRET` and `ADMIN_SECRET`.
+Fill in your Spotify API credentials from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), and set strong values for `JWT_SECRET` and `ADMIN_SECRET`. Set `ADMIN_USERNAME` to the username that should have admin access (leave blank to disable the admin panel).
 
 ### 4. Start the server
 

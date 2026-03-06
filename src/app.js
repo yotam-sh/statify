@@ -43,6 +43,13 @@ const GREEN = '#1DB954';
 const GREEN_15 = 'rgba(29,185,84,0.15)';
 const PALETTE = ['#1DB954','#1E90FF','#FF6B6B','#FFA726','#AB47BC','#26C6DA','#FFEE58','#EC407A','#66BB6A','#8D6E63'];
 
+// Admin impersonation — when set, data endpoints are routed to /api/u/{username}/...
+window._adminViewAs = null;
+function apiFetch(path, options) {
+  const base = window._adminViewAs ? `/api/u/${encodeURIComponent(window._adminViewAs)}` : '/api';
+  return fetch(base + path, options);
+}
+
 // ── Tab navigation ───────────────────────────────────────────────────
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -52,7 +59,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     const tab = btn.dataset.tab;
     document.getElementById('tab-' + tab).classList.remove('hidden');
     // Load on first visit
-    const loaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-tracks': loadTopTracks, 'top-albums': loadTopAlbums, timeline: loadTimeline, habits: loadHabits, 'deep-dive': loadDeepDiveSuggestions };
+    const loaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-tracks': loadTopTracks, 'top-albums': loadTopAlbums, timeline: loadTimeline, habits: loadHabits, 'deep-dive': loadDeepDiveSuggestions, admin: loadAdmin };
     if (loaders[tab]) loaders[tab]();
   });
 });
@@ -487,7 +494,7 @@ async function loadDashboard() {
   showLoading('dashboard');
 
   const params = buildFilterParams('dash-year-btns');
-  const data = await fetch('/api/dashboard?' + params).then(r => r.json());
+  const data = await apiFetch('/dashboard?' + params).then(r => r.json());
 
   if (!yearsInitialized.dashboard && data.years) {
     setupYearButtons('dash-year-btns', data.years, loadDashboard);
@@ -562,10 +569,10 @@ async function loadTopArtists() {
 
   showLoading('top-artists');
 
-  const data = await fetch('/api/top-artists?' + params).then(r => r.json());
+  const data = await apiFetch('/top-artists?' + params).then(r => r.json());
 
   if (!yearsInitialized.topArtists) {
-    const dashData = await fetch('/api/dashboard').then(r => r.json());
+    const dashData = await apiFetch('/dashboard').then(r => r.json());
     setupYearButtons('artists-year-btns', dashData.years, loadTopArtists);
     document.getElementById('artists-limit').addEventListener('change', loadTopArtists);
     yearsInitialized.topArtists = true;
@@ -603,10 +610,10 @@ async function loadTopTracks() {
 
   showLoading('top-tracks');
 
-  const data = await fetch('/api/top-tracks?' + params).then(r => r.json());
+  const data = await apiFetch('/top-tracks?' + params).then(r => r.json());
 
   if (!yearsInitialized.topTracks) {
-    const dashData = await fetch('/api/dashboard').then(r => r.json());
+    const dashData = await apiFetch('/dashboard').then(r => r.json());
     setupYearButtons('tracks-year-btns', dashData.years, loadTopTracks);
     document.getElementById('tracks-limit').addEventListener('change', loadTopTracks);
     yearsInitialized.topTracks = true;
@@ -669,10 +676,10 @@ async function loadTopAlbums() {
 
   showLoading('top-albums');
 
-  const data = await fetch('/api/top-albums?' + params).then(r => r.json());
+  const data = await apiFetch('/top-albums?' + params).then(r => r.json());
 
   if (!yearsInitialized.topAlbums) {
-    const dashData = await fetch('/api/dashboard').then(r => r.json());
+    const dashData = await apiFetch('/dashboard').then(r => r.json());
     setupYearButtons('albums-year-btns', dashData.years, loadTopAlbums);
     document.getElementById('albums-limit').addEventListener('change', loadTopAlbums);
     yearsInitialized.topAlbums = true;
@@ -730,7 +737,7 @@ async function loadTimeline() {
   showLoading('timeline');
 
   const params = buildFilterParams('timeline-year-btns');
-  const data = await fetch('/api/timeline?' + params).then(r => r.json());
+  const data = await apiFetch('/timeline?' + params).then(r => r.json());
 
   if (!yearsInitialized.timeline && data.years) {
     setupYearButtons('timeline-year-btns', data.years, loadTimeline);
@@ -1091,7 +1098,7 @@ async function loadHabits() {
   showLoading('habits');
 
   const params = buildFilterParams('habits-year-btns');
-  const data = await fetch('/api/habits?' + params).then(r => r.json());
+  const data = await apiFetch('/habits?' + params).then(r => r.json());
   habitsData = data;
 
   if (!yearsInitialized.habits && data.years) {
@@ -1158,7 +1165,7 @@ const searchInput = document.getElementById('artist-search');
 const searchResults = document.getElementById('artist-search-results');
 
 async function loadDeepDiveSuggestions() {
-  const top5 = await fetch('/api/top-artists-brief').then(r => r.json());
+  const top5 = await apiFetch('/top-artists-brief').then(r => r.json());
   const container = document.getElementById('artist-suggestions');
   container.innerHTML = '<span class="text-sm text-gray-500 mr-1">Try:</span>' +
     top5.map(a => `<button class="suggestion-chip" onclick="selectArtist('${a.name.replace(/'/g, "\\'")}')">${imgTag(a.image, 24, true, a.name)}${esc(a.name)}</button>`).join('');
@@ -1173,7 +1180,7 @@ searchInput.addEventListener('input', () => {
   const q = searchInput.value.trim();
   if (q.length < 2) { searchResults.classList.add('hidden'); return; }
   searchTimeout = setTimeout(async () => {
-    const results = await fetch('/api/artists/search?q=' + encodeURIComponent(q)).then(r => r.json());
+    const results = await apiFetch('/artists/search?q=' + encodeURIComponent(q)).then(r => r.json());
     if (!results.length) { searchResults.classList.add('hidden'); return; }
     searchResults.innerHTML = results.map(r =>
       `<div onclick="selectArtist('${r.name.replace(/'/g, "\\'")}')">${esc(r.name)} <span class="text-gray-500 text-sm">(${r.plays.toLocaleString()} plays)</span></div>`
@@ -1193,7 +1200,7 @@ async function selectArtist(name) {
   document.getElementById('deep-dive-content').classList.add('hidden');
   document.getElementById('tab-deep-dive').style.overflow = 'visible';
 
-  const data = await fetch('/api/artist/' + encodeURIComponent(name)).then(r => r.json());
+  const data = await apiFetch('/artist/' + encodeURIComponent(name)).then(r => r.json());
   if (data.error) return;
 
   const s = data.stats;
@@ -1349,7 +1356,7 @@ async function doUpload(file, statusEl, onSuccess) {
       statusEl.innerHTML = `<span class="text-green-400">✓ Loaded ${data.files_loaded} file(s). Loading dashboard…</span>`;
       setTimeout(() => onSuccess(), 800);
     } else {
-      statusEl.innerHTML = `<span class="text-red-400">Error: ${data.detail || data.error || 'Upload failed'}</span>`;
+      statusEl.innerHTML = `<span class="text-red-400">Error: ${esc(data.detail || data.error || 'Upload failed')}</span>`;
     }
   } catch {
     statusEl.innerHTML = '<span class="text-red-400">Network error. Is the server running?</span>';
@@ -1445,6 +1452,277 @@ async function loadCompare() {
   document.getElementById('compare-results').classList.remove('hidden');
 }
 
+// ── Admin panel ───────────────────────────────────────────────────────
+
+let _adminCacheType = 'artist';
+let _adminFixType   = 'artist';
+let _adminFixTarget = null;  // { type, name, album?, artist? }
+let _adminResetTarget = null; // { user_id, username }
+let _adminCachePage = 1;
+
+function adminShowPanel(name) {
+  ['overview','users','image-cache','bulk-refresh'].forEach(p => {
+    document.getElementById('admin-panel-' + p).classList.toggle('hidden', p !== name);
+  });
+  document.querySelectorAll('.admin-pill').forEach(b => {
+    b.classList.toggle('active', b.dataset.panel === name);
+  });
+  if (name === 'overview') loadAdminOverview();
+  if (name === 'users') loadAdminUsers();
+  if (name === 'image-cache') adminLoadImageCache(1);
+}
+
+async function loadAdminOverview() {
+  const data = await fetch('/api/admin/overview').then(r => r.json());
+  const el = document.getElementById('admin-overview-content');
+  const cards = [
+    ['Users', data.users, ''],
+    ['Artists cached', data.artist_images_cached, ''],
+    ['Albums cached', data.album_images_cached, ''],
+    ['Genres cached', data.artist_genres_cached, ''],
+    ['Empty artist images', data.empty_artist_images, data.empty_artist_images > 0 ? 'color:#FFA726' : ''],
+    ['Empty album images', data.empty_album_images, data.empty_album_images > 0 ? 'color:#FFA726' : ''],
+  ];
+  el.innerHTML = cards.map(([label, val, style]) =>
+    `<div class="stat-card"><div class="value" style="${style}">${val.toLocaleString()}</div><div class="label">${label}</div></div>`
+  ).join('');
+}
+
+async function loadAdminUsers() {
+  const users = await fetch('/api/admin/users').then(r => r.json());
+  const tbody = document.getElementById('admin-users-table');
+  tbody.innerHTML = users.map(u => `
+    <tr class="table-row border-b border-white/5">
+      <td class="py-2 px-3 font-medium">${u.username}</td>
+      <td class="py-2 px-3 text-center">
+        <button onclick="adminTogglePublic('${u.user_id}',${!u.is_public})" class="text-xs px-2 py-0.5 rounded ${u.is_public ? 'bg-green-900/50 text-green-400' : 'bg-gray-700 text-gray-400'}">${u.is_public ? 'Yes' : 'No'}</button>
+      </td>
+      <td class="py-2 px-3 text-center text-gray-400">${u.file_count}</td>
+      <td class="py-2 px-3 text-gray-400 text-xs">${u.created_at.slice(0,10)}</td>
+      <td class="py-2 px-3 text-right">
+        <div class="flex gap-1 justify-end flex-wrap">
+          <button onclick="adminImpersonate('${u.username}')" class="year-btn text-xs">View data</button>
+          <button onclick="adminOpenReset('${u.user_id}','${u.username}')" class="year-btn text-xs">Reset pw</button>
+          <button onclick="adminDeleteUser('${u.user_id}','${u.username}')" class="year-btn-clear text-xs" style="border-color:#ff6b6b55">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+async function adminTogglePublic(userId, newVal) {
+  await fetch(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({is_public: newVal}),
+  });
+  loadAdminUsers();
+}
+
+async function adminDeleteUser(userId, username) {
+  if (!confirm(`Delete user "${username}"? This removes all their data and cannot be undone.`)) return;
+  await fetch(`/api/admin/users/${userId}`, {method: 'DELETE'});
+  loadAdminUsers();
+  loadAdminOverview();
+}
+
+function adminOpenReset(userId, username) {
+  _adminResetTarget = {user_id: userId, username};
+  document.getElementById('admin-reset-username').textContent = username;
+  document.getElementById('admin-reset-pw').value = '';
+  document.getElementById('admin-reset-error').textContent = '';
+  document.getElementById('admin-reset-modal').classList.remove('hidden');
+}
+
+async function adminConfirmReset() {
+  const pw = document.getElementById('admin-reset-pw').value;
+  const errEl = document.getElementById('admin-reset-error');
+  if (pw.length < 8) { errEl.textContent = 'Password must be at least 8 characters'; return; }
+  const res = await fetch(`/api/admin/users/${_adminResetTarget.user_id}/reset-password`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({password: pw}),
+  });
+  if (res.ok) {
+    document.getElementById('admin-reset-modal').classList.add('hidden');
+  } else {
+    errEl.textContent = (await res.json()).detail || 'Error';
+  }
+}
+
+function adminImpersonate(username) {
+  window._adminViewAs = username;
+  yearsInitialized = {};
+  document.getElementById('admin-viewing-as-name').textContent = username;
+  document.getElementById('admin-impersonation-bar').classList.remove('hidden');
+  // Switch to Dashboard tab to trigger a fresh load with the new apiFetch routing
+  const dashBtn = document.querySelector('[data-tab="dashboard"]');
+  if (dashBtn) dashBtn.click();
+}
+
+function adminStopImpersonating() {
+  window._adminViewAs = null;
+  yearsInitialized = {};
+  document.getElementById('admin-impersonation-bar').classList.add('hidden');
+  const dashBtn = document.querySelector('[data-tab="dashboard"]');
+  if (dashBtn) dashBtn.click();
+}
+
+function adminSetCacheType(type) {
+  _adminCacheType = type;
+  document.querySelectorAll('[data-cache-type]').forEach(b => b.classList.toggle('active', b.dataset.cacheType === type));
+  adminLoadImageCache(1);
+}
+
+function adminSetFixType(type) {
+  _adminFixType = type;
+  document.querySelectorAll('[data-fix-type]').forEach(b => b.classList.toggle('active', b.dataset.fixType === type));
+}
+
+async function adminLoadImageCache(page) {
+  _adminCachePage = page;
+  const q = document.getElementById('admin-cache-search').value;
+  const params = new URLSearchParams({type: _adminCacheType, q, page, limit: 50});
+  const data = await fetch('/api/admin/image-cache?' + params).then(r => r.json());
+  const tbody = document.getElementById('admin-cache-table');
+  tbody.innerHTML = data.items.map(item => {
+    const name  = _adminCacheType === 'artist' ? item.artist_name : `${item.album_name} — ${item.artist_name}`;
+    const thumb = item.image_url
+      ? `<img src="${item.image_url}" style="width:40px;height:40px;object-fit:cover;border-radius:4px">`
+      : `<div style="width:40px;height:40px;background:#333;border-radius:4px"></div>`;
+    const fixBtn = _adminCacheType === 'artist'
+      ? `<button onclick="adminPrefillFix('${escAttr(item.artist_name)}')" class="year-btn text-xs">Fix</button>`
+      : `<button onclick="adminPrefillFixAlbum('${escAttr(item.album_name)}','${escAttr(item.artist_name)}')" class="year-btn text-xs">Fix</button>`;
+    const delBtn = _adminCacheType === 'artist'
+      ? `<button onclick="adminDeleteArtistCache('${escAttr(item.artist_name)}')" class="year-btn-clear text-xs">Del</button>`
+      : `<button onclick="adminDeleteAlbumCache('${escAttr(item.album_name)}','${escAttr(item.artist_name)}')" class="year-btn-clear text-xs">Del</button>`;
+    return `<tr class="table-row border-b border-white/5">
+      <td class="py-2 px-3">${thumb}</td>
+      <td class="py-2 px-3 text-sm">${esc(name)}</td>
+      <td class="py-2 px-3 text-xs text-gray-400 hidden md:table-cell">${(item.fetched_at||'').slice(0,10)}</td>
+      <td class="py-2 px-3 text-right"><div class="flex gap-1 justify-end">${fixBtn}${delBtn}</div></td>
+    </tr>`;
+  }).join('');
+
+  const totalPages = Math.ceil(data.total / 50);
+  const pagEl = document.getElementById('admin-cache-pagination');
+  pagEl.innerHTML = `<span>${data.total} entries</span>` +
+    (page > 1 ? `<button class="year-btn text-xs" onclick="adminLoadImageCache(${page-1})">← Prev</button>` : '') +
+    `<span>Page ${page} / ${totalPages || 1}</span>` +
+    (page < totalPages ? `<button class="year-btn text-xs" onclick="adminLoadImageCache(${page+1})">Next →</button>` : '');
+}
+
+function escAttr(s) { return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+
+function adminPrefillFix(artistName) {
+  _adminFixTarget = {type:'artist', name: artistName};
+  _adminFixType = 'artist';
+  document.querySelectorAll('[data-fix-type]').forEach(b => b.classList.toggle('active', b.dataset.fixType === 'artist'));
+  document.getElementById('admin-fix-query').value = artistName;
+  document.getElementById('admin-fix-target-name').textContent = artistName;
+  document.getElementById('admin-fix-target').classList.remove('hidden');
+  adminShowPanel('image-cache');
+}
+
+function adminPrefillFixAlbum(albumName, artistName) {
+  _adminFixTarget = {type:'album', album: albumName, artist: artistName};
+  _adminFixType = 'album';
+  document.querySelectorAll('[data-fix-type]').forEach(b => b.classList.toggle('active', b.dataset.fixType === 'album'));
+  document.getElementById('admin-fix-query').value = albumName;
+  document.getElementById('admin-fix-target-name').textContent = `${albumName} — ${artistName}`;
+  document.getElementById('admin-fix-target').classList.remove('hidden');
+  adminShowPanel('image-cache');
+}
+
+function adminClearFixTarget() {
+  _adminFixTarget = null;
+  document.getElementById('admin-fix-target').classList.add('hidden');
+}
+
+async function adminSearchImage() {
+  const q = document.getElementById('admin-fix-query').value.trim();
+  if (!q) return;
+  const params = new URLSearchParams({q, type: _adminFixType});
+  const results = await fetch('/api/admin/image-cache/search?' + params).then(r => r.json());
+  const el = document.getElementById('admin-search-results');
+  if (!results.length) { el.innerHTML = '<p class="text-gray-400 text-sm col-span-full">No results found.</p>'; return; }
+  el.innerHTML = results.map(r => {
+    const label = _adminFixType === 'artist' ? esc(r.name) : `${esc(r.name)}<br><span class="text-gray-400">${esc(r.artist||'')}</span>`;
+    const target = _adminFixType === 'artist'
+      ? `data-target-name="${escAttr(r.name)}"`
+      : `data-target-album="${escAttr(r.name)}" data-target-artist="${escAttr(r.artist||'')}"`;
+    return `<div class="bg-card rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-green-500 transition" onclick="adminPickImage(this,'${escAttr(r.image)}')" ${target}>
+      <div style="aspect-ratio:1;background:#222">${r.image ? `<img src="${r.image}" style="width:100%;height:100%;object-fit:cover">` : ''}</div>
+      <div class="p-2 text-xs">${label}</div>
+    </div>`;
+  }).join('');
+}
+
+async function adminPickImage(el, imageUrl) {
+  const target = _adminFixTarget;
+  if (!target) {
+    // derive from clicked card
+    const name   = el.dataset.targetName;
+    const album  = el.dataset.targetAlbum;
+    const artist = el.dataset.targetArtist;
+    if (_adminFixType === 'artist' && name) {
+      await fetch(`/api/admin/image-cache/artist/${encodeURIComponent(name)}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({image_url: imageUrl}),
+      });
+    } else if (album) {
+      await fetch('/api/admin/image-cache/album', {
+        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({album, artist, image_url: imageUrl}),
+      });
+    }
+  } else if (target.type === 'artist') {
+    await fetch(`/api/admin/image-cache/artist/${encodeURIComponent(target.name)}`, {
+      method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({image_url: imageUrl}),
+    });
+    adminClearFixTarget();
+  } else {
+    await fetch('/api/admin/image-cache/album', {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({album: target.album, artist: target.artist, image_url: imageUrl}),
+    });
+    adminClearFixTarget();
+  }
+  // Highlight saved card briefly
+  el.style.outline = '2px solid #1DB954';
+  setTimeout(() => { el.style.outline = ''; }, 1500);
+  adminLoadImageCache(_adminCachePage);
+}
+
+async function adminDeleteArtistCache(name) {
+  await fetch(`/api/admin/image-cache/artist/${encodeURIComponent(name)}`, {method: 'DELETE'});
+  adminLoadImageCache(_adminCachePage);
+}
+
+async function adminDeleteAlbumCache(album, artist) {
+  await fetch('/api/admin/image-cache/album', {
+    method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({album, artist}),
+  });
+  adminLoadImageCache(_adminCachePage);
+}
+
+async function adminBulkRefresh(type) {
+  const statusEl = document.getElementById('admin-refresh-status');
+  statusEl.textContent = 'Running… this may take a while.';
+  statusEl.style.color = '#b3b3b3';
+  try {
+    const res = await fetch(`/api/admin/image-cache/refresh-empty?type=${type}`, {method: 'POST'});
+    const data = await res.json();
+    statusEl.textContent = `Done. Attempted: ${data.attempted}, refreshed: ${data.refreshed}, still empty: ${data.still_empty}`;
+    statusEl.style.color = '#1DB954';
+    loadAdminOverview();
+  } catch {
+    statusEl.textContent = 'Error — check server logs.';
+    statusEl.style.color = '#ff6b6b';
+  }
+}
+
+function loadAdmin() {
+  adminShowPanel('overview');
+}
+
 // ── Init ─────────────────────────────────────────────────────────────
 async function initApp() {
   const meRes = await _origFetch('/api/auth/me');
@@ -1456,11 +1734,25 @@ async function initApp() {
   document.getElementById('nav-username').textContent = '@' + me.username;
   document.getElementById('nav-user-area').style.cssText = 'display:flex!important';
   document.getElementById('compare-user-a').value = me.username;
+  if (me.is_admin) {
+    document.getElementById('tab-btn-admin').style.display = '';
+  }
 
   const { has_data } = await fetch('/api/status').then(r => r.json());
   if (!has_data) showSplash(); else loadDashboard();
 }
 initApp();
+
+function togglePasswordVisibility() {
+  const input = document.getElementById('login-password');
+  const icon  = document.getElementById('eye-icon');
+  const show  = input.type === 'password';
+  input.type  = show ? 'text' : 'password';
+  // Swap between open-eye and crossed-eye SVG paths
+  icon.innerHTML = show
+    ? '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/>'
+    : '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+}
 
 // ── Expose functions required by inline HTML event handlers ──────────
 window.doLogin = doLogin;
@@ -1474,3 +1766,22 @@ window.setHourlyMode = setHourlyMode;
 window.setDailyMode = setDailyMode;
 window.selectArtist = selectArtist;
 window.loadCompare = loadCompare;
+window.togglePasswordVisibility = togglePasswordVisibility;
+window.adminShowPanel = adminShowPanel;
+window.adminTogglePublic = adminTogglePublic;
+window.adminDeleteUser = adminDeleteUser;
+window.adminOpenReset = adminOpenReset;
+window.adminConfirmReset = adminConfirmReset;
+window.adminImpersonate = adminImpersonate;
+window.adminStopImpersonating = adminStopImpersonating;
+window.adminSetCacheType = adminSetCacheType;
+window.adminSetFixType = adminSetFixType;
+window.adminLoadImageCache = adminLoadImageCache;
+window.adminSearchImage = adminSearchImage;
+window.adminPickImage = adminPickImage;
+window.adminDeleteArtistCache = adminDeleteArtistCache;
+window.adminDeleteAlbumCache = adminDeleteAlbumCache;
+window.adminBulkRefresh = adminBulkRefresh;
+window.adminPrefillFix = adminPrefillFix;
+window.adminPrefillFixAlbum = adminPrefillFixAlbum;
+window.adminClearFixTarget = adminClearFixTarget;
