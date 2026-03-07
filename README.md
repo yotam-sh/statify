@@ -13,7 +13,7 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
 - **Timeline** - Yearly bar chart, interactive monthly heatmap with daily drill-down popups, taste evolution bump chart showing top 5 artists per year with rank lines and artist photos
 - **Listening Habits** - Hour-of-day and day-of-week bar charts with Total/Average toggles, shuffle/skip stats, platform treemap
 - **Artist Deep-Dive** - Search any artist for detailed stats, monthly timeline, top albums, and top tracks
-- **Compare** - Side-by-side comparison of two users: shared artists/tracks, exclusive artists, and a 0-100 musical similarity score based on Jaccard overlap of top artists, tracks, and genres
+- **Compare** - Multi-user comparison (self vs up to 4 others) in a tabular layout: 0–100 musical similarity gauge per user, shared artists and tracks (searched across full listening history), exclusive artists and tracks, artist overlap donut (% of top 100 shared), hour-of-day listening pattern lines, and skip rate bars
 
 ### Auth & Multi-User
 
@@ -22,15 +22,21 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
 - **Per-user data** - each user's streaming history stored separately; data never crosses between accounts
 - **Per-user TTL cache** - DataFrames cached in memory for 10 minutes after last use, then evicted; server restarts clean
 - **Public profiles** - each user's data is viewable at `/api/u/{username}/...`
-- **In-app Admin panel** - admin user can view system overview stats, manage users (toggle public flag, reset password, delete), impersonate any user to browse their data, browse and edit the image cache, search Spotify for replacement images, and bulk-refresh empty image entries
+- **In-app Admin panel** - admin user can:
+  - View system overview: user count, cached image/genre counts, Spotify API availability status; empty image counts are clickable and jump directly to a filtered image cache view
+  - Manage users in a sortable, filterable table with data size (MB), last data date, and file count columns; actions include toggle public/private, view data, reset password, clear streaming data (keeps account), and delete account
+  - Browse and edit the image cache with the "Fix an Image" search panel side-by-side with the table; search Spotify by name or Spotify ID, pick a replacement image, and save it; bulk-refresh all empty entries
+  - Impersonate any user to browse their data
 
 ### UX
 
 - **Hours/Minutes toggle** - switch display units globally from the user menu
+- **Profile visibility toggle** - users can set their own profile to Public or Private from the user menu
 - **Shared year filter** - single persistent filter bar above all data tabs; selecting years on any tab applies to all; switching tabs after a filter change is instant (other tabs preload silently in the background)
 - **Upload via UI** - drag & drop or file picker; re-upload anytime to update data
 - **Friendly upload errors** - validates zip structure, file naming, JSON schema, and Spotify column presence before accepting data
-- **User menu** - username + gear icon opens dropdown with unit toggle, upload, and logout
+- **User menu** - username + gear icon opens dropdown with unit toggle, visibility toggle, upload, and logout
+- **Sticky table headers** - column headers stay visible while scrolling through long tables; columns are fixed-width with wrapping cell text
 - **Mobile-responsive** - charts adapt to portrait/landscape viewports; tab bar scrolls on small screens
 - **Login page mosaic** - animated 3-column scrolling mosaic of background images on the login screen; drop images into `asset/login_backgrounds/` to include them automatically
 

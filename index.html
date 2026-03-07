@@ -97,6 +97,13 @@
             <button class="unit-opt" data-unit="m" onclick="setUnit(true)">Minutes</button>
           </div>
         </div>
+        <div style="padding:4px 4px 8px;border-bottom:1px solid #333;margin-bottom:6px">
+          <div style="font-size:0.7rem;color:#888;margin-bottom:4px;padding-left:2px">Profile visibility</div>
+          <div class="unit-switch" style="width:100%">
+            <button class="unit-opt profile-vis-opt active" data-vis="public" onclick="setPublicProfile(true)">Public</button>
+            <button class="unit-opt profile-vis-opt" data-vis="private" onclick="setPublicProfile(false)">Private</button>
+          </div>
+        </div>
         <button class="user-menu-item" onclick="openUploadModal();closeUserMenu()">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
           Upload data
@@ -155,7 +162,7 @@
     <div id="top-artists-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="top-artists-content" class="hidden">
       <div class="card chart-tall mb-6"><canvas id="chart-artists-bar"></canvas></div>
-      <div class="card overflow-x-auto">
+      <div class="card">
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b border-white/10">
             <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Artist</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right dur-header">Hours</th>
@@ -177,7 +184,7 @@
     <div id="top-albums-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="top-albums-content" class="hidden">
       <div class="card chart-tall mb-6"><canvas id="chart-albums-bar"></canvas></div>
-      <div class="card overflow-x-auto">
+      <div class="card">
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b border-white/10">
             <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Album</th><th class="py-2 px-3">Artist</th><th class="py-2 px-3 text-right">Tracks</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right dur-header">Hours</th>
@@ -199,7 +206,7 @@
     <div id="top-tracks-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="top-tracks-content" class="hidden">
       <div class="card chart-tall mb-6"><canvas id="chart-tracks-bar"></canvas></div>
-      <div class="card overflow-x-auto">
+      <div class="card">
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b border-white/10">
             <th class="py-2 px-3 w-12">#</th><th class="py-2 px-3 w-12"></th><th class="py-2 px-3">Track</th><th class="py-2 px-3">Artist</th><th class="py-2 px-3">Album</th><th class="py-2 px-3 text-right">Plays</th><th class="py-2 px-3 text-right dur-header">Hours</th>
@@ -272,7 +279,7 @@
       </div>
       <div class="card mb-6"><h3 class="text-lg font-semibold mb-4">Listening Over Time</h3><div style="height:clamp(140px,40vw,180px)"><canvas id="chart-artist-monthly"></canvas></div></div>
       <div class="card mb-6"><h3 class="text-lg font-semibold mb-4">Top Albums</h3><div id="artist-albums-grid" class="flex justify-between"></div></div>
-      <div class="card overflow-x-auto">
+      <div class="card">
         <h3 class="text-lg font-semibold mb-4">Top Tracks</h3>
         <table class="w-full text-sm">
           <thead><tr class="text-left text-gray-400 border-b border-white/10">
@@ -286,67 +293,46 @@
 
   <!-- Compare -->
   <section id="tab-compare" class="hidden">
-    <div class="card mb-6">
-      <h2 class="text-lg font-bold mb-3">Compare with a friend</h2>
-      <div class="flex flex-wrap gap-3 items-end">
-        <div class="flex-1" style="min-width:160px">
-          <p class="text-xs text-gray-400 mb-1">Your username</p>
-          <input id="compare-user-a" type="text" class="filter-input w-full" placeholder="username_a">
-        </div>
-        <div class="flex-1" style="min-width:160px">
-          <p class="text-xs text-gray-400 mb-1">Friend's username</p>
-          <input id="compare-user-b" type="text" class="filter-input w-full" placeholder="username_b">
-        </div>
-        <button onclick="loadCompare()" class="auth-btn" style="width:auto;padding:0.5rem 1.5rem;">Compare</button>
+    <div class="card mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-bold">Compare listening</h2>
+        <span id="cmp-user-count" class="text-xs text-gray-500">2 / 5 users</span>
       </div>
+      <div id="cmp-user-slots"></div>
+      <button id="cmp-add-btn" onclick="addCompareUser()" class="mt-2 text-sm text-gray-400 hover:text-white border border-dashed border-gray-600 hover:border-gray-400 rounded-lg px-3 py-1.5 transition-all" style="background:none;cursor:pointer">+ Add user</button>
+      <button onclick="loadCompare()" class="auth-btn mt-4">Compare</button>
       <div id="compare-error" class="text-red-400 text-sm mt-2 min-h-[1.25rem]"></div>
     </div>
+
+    <div id="cmp-toast" class="cmp-toast hidden"></div>
 
     <div id="compare-loading" class="hidden flex items-center justify-center py-20"><div class="loader"></div></div>
 
     <div id="compare-results" class="hidden">
-      <!-- Similarity score -->
-      <div class="card mb-4 text-center">
-        <p class="text-sm text-gray-400 mb-1">Musical similarity</p>
-        <div class="sim-score" id="cmp-score">—</div>
-        <p class="text-xs text-gray-500 mt-1">out of 100</p>
+      <!-- Stats table -->
+      <div class="card mb-4 overflow-x-auto">
+        <table id="cmp-stats-table" class="w-full text-sm"></table>
       </div>
 
-      <!-- Side-by-side stats -->
-      <div class="grid grid-cols-2 gap-4 mb-4">
-        <div class="compare-card">
-          <p id="cmp-name-a" class="font-bold text-green-400 mb-3"></p>
-          <div id="cmp-stats-a" class="space-y-1 text-sm"></div>
-        </div>
-        <div class="compare-card">
-          <p id="cmp-name-b" class="font-bold text-green-400 mb-3"></p>
-          <div id="cmp-stats-b" class="space-y-1 text-sm"></div>
-        </div>
+      <!-- Radar chart (all modes) -->
+      <div class="card mb-4 flex justify-center">
+        <canvas id="cmp-radar-chart" style="max-height:320px;max-width:480px;width:100%"></canvas>
       </div>
 
-      <!-- Shared artists -->
+      <!-- Hour-of-day listening patterns -->
       <div class="card mb-4">
-        <h3 class="font-semibold mb-3">Artists you both love</h3>
-        <div id="cmp-shared-artists" class="flex flex-wrap gap-2"></div>
+        <h3 class="font-semibold mb-3">When you listen</h3>
+        <canvas id="cmp-hour-chart" style="max-height:240px"></canvas>
       </div>
 
-      <!-- Only A / Only B -->
-      <div class="grid grid-cols-2 gap-4 mb-4">
-        <div class="card">
-          <h3 class="font-semibold mb-2 text-sm" id="cmp-only-a-title"></h3>
-          <ul id="cmp-only-a" class="text-sm text-gray-300 space-y-1"></ul>
-        </div>
-        <div class="card">
-          <h3 class="font-semibold mb-2 text-sm" id="cmp-only-b-title"></h3>
-          <ul id="cmp-only-b" class="text-sm text-gray-300 space-y-1"></ul>
-        </div>
+      <!-- Skip rate comparison -->
+      <div class="card mb-4">
+        <h3 class="font-semibold mb-3">Skip rate</h3>
+        <canvas id="cmp-skip-chart" style="max-height:180px"></canvas>
       </div>
 
-      <!-- Shared tracks -->
-      <div class="card">
-        <h3 class="font-semibold mb-3">Tracks you both play</h3>
-        <ul id="cmp-shared-tracks" class="space-y-1 text-sm text-gray-300"></ul>
-      </div>
+      <!-- Pairwise breakdown (self vs each user, dynamically rendered) -->
+      <div id="cmp-pairs"></div>
     </div>
   </section>
 
@@ -375,15 +361,10 @@
 
     <!-- Users panel -->
     <div id="admin-panel-users" class="hidden">
-      <div class="card overflow-x-auto">
+      <input id="admin-users-filter" class="filter-input mb-3 w-full max-w-xs" placeholder="Filter by username…" oninput="_renderAdminUsers()">
+      <div class="card">
         <table class="w-full text-sm">
-          <thead><tr class="text-left text-gray-400 border-b border-white/10">
-            <th class="py-2 px-3">Username</th>
-            <th class="py-2 px-3 text-center">Public</th>
-            <th class="py-2 px-3 text-center">Files</th>
-            <th class="py-2 px-3">Created</th>
-            <th class="py-2 px-3 text-right">Actions</th>
-          </tr></thead>
+          <thead id="admin-users-thead"></thead>
           <tbody id="admin-users-table"></tbody>
         </table>
       </div>
@@ -400,6 +381,18 @@
           <p id="admin-reset-error" class="text-red-400 text-xs mt-2 min-h-[1rem]"></p>
         </div>
       </div>
+      <!-- Clear user data modal -->
+      <div id="admin-clear-data-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+        <div class="card" style="min-width:320px;max-width:90vw">
+          <h3 class="font-semibold mb-1">Clear streaming data</h3>
+          <p class="text-sm text-gray-400 mb-4">Delete all streaming history for <strong id="admin-clear-data-username"></strong>? Their account stays active but all listening history will be permanently deleted.</p>
+          <p id="admin-clear-data-error" class="text-red-400 text-xs mb-3 min-h-[1rem]"></p>
+          <div class="flex gap-2 justify-end">
+            <button onclick="document.getElementById('admin-clear-data-modal').classList.add('hidden')" class="year-btn-clear">Cancel</button>
+            <button onclick="adminConfirmClearData()" class="year-btn" style="border-color:#ff6b6b55;color:#ff6b6b">Delete data</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Image Cache panel -->
@@ -411,37 +404,52 @@
         </div>
         <input id="admin-cache-search" class="filter-input" placeholder="Search…" oninput="adminLoadImageCache(1)">
       </div>
-      <div class="card overflow-x-auto mb-4">
-        <table class="w-full text-sm">
-          <thead><tr class="text-left text-gray-400 border-b border-white/10">
-            <th class="py-2 px-3 w-14">Image</th>
-            <th class="py-2 px-3">Name</th>
-            <th class="py-2 px-3 hidden md:table-cell">Fetched</th>
-            <th class="py-2 px-3 text-right">Actions</th>
-          </tr></thead>
-          <tbody id="admin-cache-table"></tbody>
-        </table>
+      <div id="admin-cache-empty-notice" class="hidden flex items-center gap-2 mb-3 text-sm" style="color:#FFA726">
+        <span>Showing empty images only</span>
+        <button onclick="clearEmptyFilter()" class="year-btn text-xs">Clear filter</button>
       </div>
-      <div id="admin-cache-pagination" class="flex gap-2 items-center text-sm text-gray-400 mb-6"></div>
-
-      <!-- Fix image panel -->
-      <div class="card">
-        <h3 class="font-semibold mb-3">Fix an Image</h3>
-        <p class="text-xs text-gray-400 mb-3">Search Spotify for an artist or album, pick the right image, and save it to the cache.</p>
-        <div class="flex gap-2 mb-3">
-          <input id="admin-fix-query" class="filter-input flex-1" placeholder="Artist/album name or Spotify ID…">
-          <div class="unit-switch">
-            <button class="unit-opt active" data-fix-type="artist" onclick="adminSetFixType('artist')">Artist</button>
-            <button class="unit-opt" data-fix-type="album" onclick="adminSetFixType('album')">Album</button>
+      <div class="flex gap-4" style="flex-wrap:wrap;align-items:stretch">
+        <!-- Table + pagination -->
+        <div style="flex:1;min-width:0">
+          <div class="card">
+            <table class="w-full text-sm" style="table-layout:fixed">
+              <colgroup>
+                <col style="width:60px">
+                <col>
+                <col style="width:90px">
+                <col style="width:130px">
+              </colgroup>
+              <thead><tr class="text-left text-gray-400 border-b border-white/10">
+                <th class="py-2 px-3">Image</th>
+                <th class="py-2 px-3">Name</th>
+                <th class="py-2 px-3 hidden md:table-cell">Fetched</th>
+                <th class="py-2 px-3 text-right">Actions</th>
+              </tr></thead>
+              <tbody id="admin-cache-table"></tbody>
+            </table>
           </div>
-          <button onclick="adminSearchImage()" class="year-btn">Search</button>
         </div>
-        <div id="admin-fix-target" class="text-xs text-gray-400 mb-2 hidden">
-          Overriding: <strong id="admin-fix-target-name"></strong>
-          <button onclick="adminClearFixTarget()" class="ml-2 text-gray-500 hover:text-white">[clear]</button>
+
+        <!-- Fix image panel -->
+        <div class="card" style="width:320px;flex-shrink:0">
+          <h3 class="font-semibold mb-3">Fix an Image</h3>
+          <p class="text-xs text-gray-400 mb-3">Search Spotify for an artist or album, pick the right image, and save it to the cache.</p>
+          <div class="flex gap-2 mb-2 flex-wrap">
+            <input id="admin-fix-query" class="filter-input" style="min-width:0;flex:1" placeholder="Artist/album name or Spotify ID…">
+            <div class="unit-switch">
+              <button class="unit-opt active" data-fix-type="artist" onclick="adminSetFixType('artist')">Artist</button>
+              <button class="unit-opt" data-fix-type="album" onclick="adminSetFixType('album')">Album</button>
+            </div>
+          </div>
+          <button onclick="adminSearchImage()" class="year-btn w-full mb-3">Search</button>
+          <div id="admin-fix-target" class="text-xs text-gray-400 mb-2 hidden">
+            Overriding: <strong id="admin-fix-target-name"></strong>
+            <button onclick="adminClearFixTarget()" class="ml-2 text-gray-500 hover:text-white">[clear]</button>
+          </div>
+          <div id="admin-search-results" class="grid grid-cols-2 gap-2"></div>
         </div>
-        <div id="admin-search-results" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3"></div>
       </div>
+      <div id="admin-cache-pagination" class="flex gap-2 items-center text-sm text-gray-400 mt-3"></div>
     </div>
 
     <!-- Bulk Refresh panel -->

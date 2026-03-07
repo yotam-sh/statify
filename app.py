@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import difflib
 import glob as globmod
+from itertools import combinations
 import io
+import json
 import os
 import re
 import shutil
@@ -842,6 +844,25 @@ async def login_backgrounds():
     return [f"/asset/login_backgrounds/{f}" for f in files]
 
 
+@app.get("/api/users/search")
+async def users_search(q: str = Query(..., min_length=1), viewer: dict | None = Depends(get_optional_user)):
+    """Return public usernames with data matching query (excludes the viewer's own username)."""
+    q_lower = q.lower()
+    db = _get_users_db()
+    rows = db.execute(
+        "SELECT user_id, username FROM users WHERE is_public=1 AND LOWER(username) LIKE ?",
+        (f"%{q_lower}%",),
+    ).fetchall()
+    results = []
+    for row in rows:
+        user_dir = _user_data_dir(row[0])
+        if globmod.glob(os.path.join(user_dir, "Streaming_History_Audio_*.json")):
+            results.append(row[1])
+    if viewer:
+        results = [u for u in results if u != viewer["username"]]
+    return results[:10]
+
+
 @app.post("/api/auth/login")
 @_limiter.limit("10/minute")
 async def login(request: Request):
@@ -878,7 +899,23 @@ async def logout():
 
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return {"user_id": user["sub"], "username": user["username"], "is_admin": bool(user.get("is_admin"))}
+    uconn = _get_users_db()
+    row = uconn.execute("SELECT is_public FROM users WHERE user_id = ?", (user["sub"],)).fetchone()
+    uconn.close()
+    is_public = bool(row[0]) if row else True
+    return {"user_id": user["sub"], "username": user["username"], "is_admin": bool(user.get("is_admin")), "is_public": is_public}
+
+
+@app.patch("/api/users/me")
+async def update_my_profile(request: Request, user: dict = Depends(get_current_user)):
+    body = await request.json()
+    if "is_public" in body:
+        uconn = _get_users_db()
+        uconn.execute("UPDATE users SET is_public = ? WHERE user_id = ?",
+                      (int(bool(body["is_public"])), user["sub"]))
+        uconn.commit()
+        uconn.close()
+    return {"ok": True}
 
 
 @app.post("/admin/create-user")
@@ -923,6 +960,7 @@ async def admin_overview(_: dict = Depends(require_admin)):
     empty_albums   = iconn.execute("SELECT COUNT(*) FROM album_images WHERE image_url = ''").fetchone()[0]
     iconn.close()
 
+    api_available = bool(os.getenv("SPOTIPY_CLIENT_ID") and os.getenv("SPOTIPY_CLIENT_SECRET"))
     return {
         "users": user_count,
         "artist_images_cached": artist_cached,
@@ -930,6 +968,7 @@ async def admin_overview(_: dict = Depends(require_admin)):
         "artist_genres_cached": genre_cached,
         "empty_artist_images": empty_artists,
         "empty_album_images": empty_albums,
+        "api_available": api_available,
     }
 
 
@@ -943,13 +982,28 @@ async def admin_list_users(_: dict = Depends(require_admin)):
     result = []
     for user_id, username, is_public, created_at in rows:
         data_dir = _user_data_dir(user_id)
-        file_count = len(globmod.glob(os.path.join(data_dir, "Streaming_History_Audio_*.json")))
+        files = globmod.glob(os.path.join(data_dir, "Streaming_History_Audio_*.json"))
+        file_count = len(files)
+        size_mb = round(sum(os.path.getsize(f) for f in files) / 1_000_000, 2) if files else 0.0
+        last_date = None
+        for f in files:
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    entries = json.load(fh)
+                for entry in entries:
+                    ts = (entry.get("ts") or entry.get("endTime") or "")[:10]
+                    if ts and (last_date is None or ts > last_date):
+                        last_date = ts
+            except Exception:
+                pass
         result.append({
             "user_id": user_id,
             "username": username,
             "is_public": bool(is_public),
             "created_at": created_at,
             "file_count": file_count,
+            "size_mb": size_mb,
+            "data_date": last_date or "",
         })
     return result
 
@@ -1007,33 +1061,50 @@ async def admin_delete_user(user_id: str, admin: dict = Depends(require_admin)):
     return {"ok": True}
 
 
+@app.delete("/api/admin/users/{user_id}/data")
+async def admin_clear_user_data(user_id: str, admin: dict = Depends(require_admin)):
+    uconn = _get_users_db()
+    row = uconn.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    uconn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    data_dir = _user_data_dir(user_id)
+    if os.path.isdir(data_dir):
+        for f in globmod.glob(os.path.join(data_dir, "Streaming_History_Audio_*.json")):
+            os.remove(f)
+    _user_cache.pop(user_id, None)
+    return {"ok": True}
+
+
 @app.get("/api/admin/image-cache")
 async def admin_image_cache(
     type: str = Query("artist", pattern="^(artist|album)$"),
     q: str = Query(""),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
+    empty_only: bool = Query(False),
     _: dict = Depends(require_admin),
 ):
     offset = (page - 1) * limit
     iconn = _get_db()
+    empty_clause = " AND image_url = ''" if empty_only else ""
     if type == "artist":
         search = f"%{q}%" if q else "%"
         total = iconn.execute(
-            "SELECT COUNT(*) FROM artist_images WHERE artist_name LIKE ?", (search,)
+            f"SELECT COUNT(*) FROM artist_images WHERE artist_name LIKE ?{empty_clause}", (search,)
         ).fetchone()[0]
         rows = iconn.execute(
-            "SELECT artist_name, image_url, fetched_at FROM artist_images WHERE artist_name LIKE ? ORDER BY artist_name LIMIT ? OFFSET ?",
+            f"SELECT artist_name, image_url, fetched_at FROM artist_images WHERE artist_name LIKE ?{empty_clause} ORDER BY artist_name LIMIT ? OFFSET ?",
             (search, limit, offset),
         ).fetchall()
         items = [{"artist_name": r[0], "image_url": r[1], "fetched_at": r[2]} for r in rows]
     else:
         search = f"%{q}%" if q else "%"
         total = iconn.execute(
-            "SELECT COUNT(*) FROM album_images WHERE album_name LIKE ? OR artist_name LIKE ?", (search, search)
+            f"SELECT COUNT(*) FROM album_images WHERE (album_name LIKE ? OR artist_name LIKE ?){empty_clause}", (search, search)
         ).fetchone()[0]
         rows = iconn.execute(
-            "SELECT album_name, artist_name, image_url, fetched_at FROM album_images WHERE album_name LIKE ? OR artist_name LIKE ? ORDER BY artist_name, album_name LIMIT ? OFFSET ?",
+            f"SELECT album_name, artist_name, image_url, fetched_at FROM album_images WHERE (album_name LIKE ? OR artist_name LIKE ?){empty_clause} ORDER BY artist_name, album_name LIMIT ? OFFSET ?",
             (search, search, limit, offset),
         ).fetchall()
         items = [{"album_name": r[0], "artist_name": r[1], "image_url": r[2], "fetched_at": r[3]} for r in rows]
@@ -1477,6 +1548,124 @@ async def compare(username_a: str, username_b: str, viewer: dict | None = Depend
         raise HTTPException(status_code=404, detail="One or both users have no data")
 
     return _build_comparison(username_a, ud_a, username_b, ud_b)
+
+
+@app.get("/api/compare")
+async def compare_multi(users: str = Query(...), viewer: dict | None = Depends(get_optional_user)):
+    """Multi-user comparison (2–5 users, comma-separated). First user is 'self' for similarity."""
+    usernames = [u.strip() for u in users.split(",") if u.strip()]
+    if len(usernames) < 2 or len(usernames) > 5:
+        raise HTTPException(status_code=400, detail="Provide 2–5 usernames")
+    if len(set(u.lower() for u in usernames)) != len(usernames):
+        raise HTTPException(status_code=400, detail="Duplicate usernames")
+
+    N_ARTISTS, N_TRACKS = 100, 50
+
+    per_user = []
+    for username in usernames:
+        user = _resolve_public_user(username, viewer)
+        ud = _get_user_data(user["user_id"])
+        if ud is None:
+            raise HTTPException(status_code=404, detail=f"No data for '{username}'")
+        df = ud["df"]
+        top_artists_ser = df.groupby("artist")["hours"].sum().nlargest(N_ARTISTS)
+        top_tracks_ser  = df.groupby(["track", "artist"])["hours"].sum().nlargest(N_TRACKS)
+        all_tracks_ser  = df.groupby(["track", "artist"])["hours"].sum()
+        per_user.append({
+            "username": username,
+            "df": df,
+            "top_artists":         set(top_artists_ser.index),
+            "top_artists_ordered": list(top_artists_ser.index),
+            "top_tracks":          set(top_tracks_ser.index),
+            "top_tracks_ordered":  list(top_tracks_ser.index),
+            "all_tracks_ser":      all_tracks_ser,
+        })
+
+    def _stats(df: pd.DataFrame) -> dict:
+        return {
+            "total_plays": int(len(df)),
+            "total_hours": round(float(df["hours"].sum()), 1),
+            "unique_artists": int(df["artist"].nunique()),
+            "unique_tracks": int(df["track"].nunique()),
+            "first_listen": str(df["ts"].min().date()),
+            "last_listen": str(df["ts"].max().date()),
+        }
+
+    all_artists: set = set()
+    for u in per_user:
+        all_artists |= u["top_artists"]
+    genres = _get_artist_genres_batch(list(all_artists), cached_only=True)
+    genres_0 = {genres.get(a, "Other") for a in per_user[0]["top_artists"]}
+
+    result_users = []
+    for i, u in enumerate(per_user):
+        if i == 0:
+            sim = None
+        else:
+            ta0, tai = per_user[0]["top_artists"], u["top_artists"]
+            tt0, tti = per_user[0]["top_tracks"], u["top_tracks"]
+            genres_i = {genres.get(a, "Other") for a in tai}
+            j_artists = len(ta0 & tai) / max(len(ta0 | tai), 1)
+            j_tracks = len(tt0 & tti) / max(len(tt0 | tti), 1)
+            g_overlap = len(genres_0 & genres_i) / max(len(genres_0 | genres_i), 1)
+            sim = round((j_artists * 0.4 + j_tracks * 0.3 + g_overlap * 0.3) * 100)
+        df_u = u["df"]
+        hourly = [int((df_u[df_u["ts"].dt.hour == h]).shape[0]) for h in range(24)]
+        skipped_df = df_u[df_u["skipped"] == True] if "skipped" in df_u.columns else df_u.iloc[0:0]
+        skip_rate = round(len(skipped_df) / max(len(df_u), 1) * 100, 1)
+        top_skipped_ser = (
+            skipped_df.groupby("artist").size() / df_u.groupby("artist").size()
+        ).dropna().nlargest(5)
+        result_users.append({
+            "username": u["username"],
+            "stats": _stats(df_u),
+            "similarity_to_first": sim,
+            "hourly_plays": hourly,
+            "skip_rate": skip_rate,
+            "top_skipped_artists": [{"name": a, "rate": round(float(r) * 100, 1)} for a, r in top_skipped_ser.items()],
+        })
+
+    u0 = per_user[0]
+    ta0, tt0 = u0["top_artists"], u0["top_tracks"]
+    ta0_ord, tt0_ord = u0["top_artists_ordered"], u0["top_tracks_ordered"]
+
+    pairs = []
+    for ui in per_user[1:]:
+        tai, tti = ui["top_artists"], ui["top_tracks"]
+        tai_ord, tti_ord = ui["top_artists_ordered"], ui["top_tracks_ordered"]
+        genres_a = {genres.get(a, "Other") for a in ta0}
+        genres_i = {genres.get(a, "Other") for a in tai}
+        j_art = len(ta0 & tai) / max(len(ta0 | tai), 1)
+        j_trk = len(tt0 & tti) / max(len(tt0 | tti), 1)
+        g_ov  = len(genres_a & genres_i) / max(len(genres_a | genres_i), 1)
+        sim   = round((j_art * 0.4 + j_trk * 0.3 + g_ov * 0.3) * 100)
+        shared_set = ta0 & tai
+        shared_artists_ranked = sorted(
+            shared_set,
+            key=lambda a: ta0_ord.index(a) + tai_ord.index(a)
+        )[:5]
+        only_other_artists = [a for a in tai_ord if a not in ta0][:5]
+        all_ser_0 = u0["all_tracks_ser"]
+        all_ser_i = ui["all_tracks_ser"]
+        combined_tracks = all_ser_0.add(all_ser_i, fill_value=0)
+        shared_t_set = set(all_ser_0.index) & set(all_ser_i.index)
+        shared_tracks_ranked = (
+            combined_tracks[combined_tracks.index.isin(shared_t_set)]
+            .nlargest(5)
+            .index.tolist()
+        )
+        only_other_tracks = [t for t in tti_ord if t not in tt0][:5]
+        imgs = _get_artist_images_batch(shared_artists_ranked + only_other_artists, cached_only=True)
+        pairs.append({
+            "username":           ui["username"],
+            "similarity":         sim,
+            "shared_artists":     [{"name": a, "image": imgs.get(a, "")} for a in shared_artists_ranked],
+            "only_other_artists": [{"name": a, "image": imgs.get(a, "")} for a in only_other_artists],
+            "shared_tracks":      [{"track": t, "artist": a} for t, a in shared_tracks_ranked],
+            "only_other_tracks":  [{"track": t, "artist": a} for t, a in only_other_tracks],
+            "artist_overlap":     {"shared": len(ta0 & tai), "only_other": len(tai - ta0), "only_self": len(ta0 - tai)},
+        })
+    return {"users": result_users, "pairs": pairs}
 
 
 # ---------------------------------------------------------------------------

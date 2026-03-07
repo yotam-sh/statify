@@ -1345,6 +1345,7 @@ function showLogin() {
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('splash-screen').style.display = 'none';
   document.getElementById('nav-user-area').style.display = 'none';
+  document.getElementById('tab-btn-admin').style.display = 'none';
   buildLoginMosaic();
 }
 function hideLogin() {
@@ -1371,16 +1372,34 @@ async function doLogin(event) {
   }
 
   const data = await res.json();
-  hideLogin();
-  document.getElementById('nav-username').textContent = '@' + data.username;
-  document.getElementById('nav-user-area').style.cssText = 'display:flex!important';
-  document.getElementById('compare-user-a').value = data.username;
+
+  // Reset admin tab BEFORE the screen is revealed
+  document.getElementById('tab-btn-admin').style.display = 'none';
   if (data.is_admin) {
     document.getElementById('tab-btn-admin').style.display = '';
   }
 
+  // Switch tab to dashboard visually (sync, no load) BEFORE removing the login overlay
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === 'dashboard');
+    b.classList.toggle('text-gray-400', b.dataset.tab !== 'dashboard');
+  });
+  document.querySelectorAll('main > section').forEach(s => s.classList.add('hidden'));
+  document.getElementById('tab-dashboard').classList.remove('hidden');
+  document.getElementById('global-year-bar').classList.remove('hidden');
+
+  hideLogin(); // overlay removed AFTER tab state is correct — no flash
+
+  document.getElementById('nav-username').textContent = '@' + data.username;
+  document.getElementById('nav-user-area').style.cssText = 'display:flex!important';
+  _cmpCurrentUser = data.username;
+  _cmpSlots = [{ username: '', confirmed: false }];
+  _renderCompareSlots();
+  _meIsPublic = data.is_public ?? true;
+  _updateProfileVisToggle();
+
   const { has_data } = await fetch('/api/status').then(r => r.json());
-  if (!has_data) showSplash(); else loadDashboard();
+  if (!has_data) { showSplash(); } else { loadDashboard(); }
 }
 
 async function doLogout() {
@@ -1455,19 +1474,144 @@ setupDropZone('modal-drop-zone', 'modal-file-input', 'modal-status', () => {
 });
 
 // ── Compare ───────────────────────────────────────────────────────────
+let _cmpCurrentUser = '';
+let _cmpSlots = [{ username: '', confirmed: false }]; // additional user slots (max 4)
+let _cmpToastTimer = null;
+
+function _showCmpToast(msg) {
+  const el = document.getElementById('cmp-toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(_cmpToastTimer);
+  _cmpToastTimer = setTimeout(() => el.classList.add('hidden'), 2500);
+}
+
+function _renderCompareSlots() {
+  const container = document.getElementById('cmp-user-slots');
+  if (!container) return;
+  const total = 1 + _cmpSlots.length;
+  document.getElementById('cmp-user-count').textContent = `${total} / 5 users`;
+  const addBtn = document.getElementById('cmp-add-btn');
+  if (addBtn) addBtn.disabled = total >= 5;
+  container.innerHTML = '';
+
+  // Slot 0 — locked current user
+  const selfDiv = document.createElement('div');
+  selfDiv.className = 'cmp-slot';
+  selfDiv.innerHTML = `<div class="cmp-slot-inner"><input type="text" class="filter-input w-full" value="${esc(_cmpCurrentUser)}" disabled></div><span class="cmp-self-badge">You</span>`;
+  container.appendChild(selfDiv);
+
+  // Dynamic slots
+  _cmpSlots.forEach((slot, i) => {
+    const slotDiv = document.createElement('div');
+    slotDiv.className = 'cmp-slot' + (slot.confirmed ? ' cmp-slot-confirmed' : '');
+    slotDiv.innerHTML = `
+      <div class="cmp-slot-inner">
+        <input type="text" class="filter-input w-full" placeholder="Search username…" value="${esc(slot.username)}" autocomplete="off">
+        <div class="search-results hidden" style="position:absolute;top:100%;left:0;right:0;z-index:9999;margin-top:2px"></div>
+      </div>
+      <span class="cmp-slot-check${slot.confirmed ? '' : ' hidden'}">✓</span>
+      <button class="cmp-remove-btn" title="Remove">×</button>`;
+    container.appendChild(slotDiv);
+
+    const input = slotDiv.querySelector('input');
+    const dropdown = slotDiv.querySelector('.search-results');
+    const checkEl = slotDiv.querySelector('.cmp-slot-check');
+    const removeBtn = slotDiv.querySelector('.cmp-remove-btn');
+
+    removeBtn.addEventListener('click', () => removeCompareUser(i));
+
+    let debounceTimer;
+    input.addEventListener('input', () => {
+      const q = input.value.trim();
+      _cmpSlots[i].username = q;
+      _cmpSlots[i].confirmed = false;
+      slotDiv.classList.remove('cmp-slot-confirmed');
+      slotDiv.classList.remove('cmp-slot-error');
+      checkEl.classList.add('hidden');
+      clearTimeout(debounceTimer);
+      dropdown.classList.add('hidden');
+      if (q.length < 3) return;
+      debounceTimer = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/users/search?q=${encodeURIComponent(q)}`);
+          if (!res.ok) return;
+          const names = await res.json();
+          if (!names.length) {
+            dropdown.innerHTML = '<div style="color:#888;pointer-events:none;cursor:default">No users found</div>';
+            dropdown.classList.remove('hidden');
+            return;
+          }
+          dropdown.innerHTML = names.map(n => `<div data-name="${esc(n)}">${esc(n)}</div>`).join('');
+          dropdown.classList.remove('hidden');
+          dropdown.querySelectorAll('div[data-name]').forEach(d => {
+            d.addEventListener('mousedown', (e) => {
+              e.preventDefault();
+              const selectedName = d.dataset.name;
+              const isDuplicate =
+                selectedName.toLowerCase() === _cmpCurrentUser.toLowerCase() ||
+                _cmpSlots.some((s, j) => j !== i && s.username.toLowerCase() === selectedName.toLowerCase());
+              _cmpSlots[i].username = selectedName;
+              input.value = selectedName;
+              dropdown.classList.add('hidden');
+              if (isDuplicate) {
+                _cmpSlots[i].confirmed = false;
+                slotDiv.classList.remove('cmp-slot-confirmed');
+                slotDiv.classList.add('cmp-slot-error');
+                checkEl.classList.add('hidden');
+                _showCmpToast(`You've already added @${selectedName}.`);
+              } else {
+                _cmpSlots[i].confirmed = true;
+                slotDiv.classList.add('cmp-slot-confirmed');
+                slotDiv.classList.remove('cmp-slot-error');
+                checkEl.classList.remove('hidden');
+              }
+            });
+          });
+        } catch (_) {}
+      }, 300);
+    });
+
+    input.addEventListener('blur', () => setTimeout(() => dropdown.classList.add('hidden'), 150));
+  });
+}
+
+function addCompareUser() {
+  if (_cmpSlots.length >= 4) return;
+  _cmpSlots.push({ username: '', confirmed: false });
+  _renderCompareSlots();
+}
+
+function removeCompareUser(idx) {
+  _cmpSlots.splice(idx, 1);
+  _renderCompareSlots();
+}
+
 async function loadCompare() {
-  const userA = document.getElementById('compare-user-a').value.trim();
-  const userB = document.getElementById('compare-user-b').value.trim();
   const errEl = document.getElementById('compare-error');
   errEl.textContent = '';
 
-  if (!userA || !userB) { errEl.textContent = 'Please enter both usernames.'; return; }
-  if (userA === userB) { errEl.textContent = 'Enter two different usernames.'; return; }
+  const friends = _cmpSlots.map(s => s.username.trim()).filter(Boolean);
+  if (!friends.length) { _showCmpToast('Add at least one user to compare.'); return; }
 
+  for (const name of friends) {
+    if (name.toLowerCase() === _cmpCurrentUser.toLowerCase()) {
+      _showCmpToast("You're already in the comparison.");
+      return;
+    }
+  }
+  const seen = new Set();
+  for (const name of friends) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) { _showCmpToast(`You've already added @${name}.`); return; }
+    seen.add(key);
+  }
+
+  const allUsers = [_cmpCurrentUser, ...friends];
   document.getElementById('compare-loading').classList.remove('hidden');
   document.getElementById('compare-results').classList.add('hidden');
 
-  const res = await fetch(`/api/compare/${encodeURIComponent(userA)}/${encodeURIComponent(userB)}`);
+  const res = await fetch(`/api/compare?users=${allUsers.map(encodeURIComponent).join(',')}`);
   document.getElementById('compare-loading').classList.add('hidden');
 
   if (!res.ok) {
@@ -1477,42 +1621,235 @@ async function loadCompare() {
   }
 
   const data = await res.json();
-  const { user_a, user_b, overlap } = data;
-
-  document.getElementById('cmp-score').textContent = overlap.similarity_score;
-  document.getElementById('cmp-name-a').textContent = '@' + user_a.username;
-  document.getElementById('cmp-name-b').textContent = '@' + user_b.username;
-
-  const fmtStats = (stats) => Object.entries({
-    'Total hours': stats.total_hours.toLocaleString(),
-    'Total plays': stats.total_plays.toLocaleString(),
-    'Unique artists': stats.unique_artists.toLocaleString(),
-    'Unique tracks': stats.unique_tracks.toLocaleString(),
-    'Listening since': stats.first_listen,
-  }).map(([k, v]) => `<div class="flex justify-between"><span class="text-gray-400">${k}</span><span>${v}</span></div>`).join('');
-
-  document.getElementById('cmp-stats-a').innerHTML = fmtStats(user_a.stats);
-  document.getElementById('cmp-stats-b').innerHTML = fmtStats(user_b.stats);
-
-  const sharedArtistsEl = document.getElementById('cmp-shared-artists');
-  sharedArtistsEl.innerHTML = overlap.shared_artists.length
-    ? overlap.shared_artists.map(a => `
-        <div class="shared-artist-chip">
-          ${a.image ? `<img src="${a.image}" alt="">` : '<div style="width:28px;height:28px;border-radius:50%;background:#333;flex-shrink:0"></div>'}
-          <span>${a.name}</span>
-        </div>`).join('')
-    : '<p class="text-gray-500 text-sm">No shared artists in top 100.</p>';
-
-  document.getElementById('cmp-only-a-title').textContent = `Only @${user_a.username} listens to`;
-  document.getElementById('cmp-only-b-title').textContent = `Only @${user_b.username} listens to`;
-  document.getElementById('cmp-only-a').innerHTML = overlap.only_a.map(a => `<li>${a}</li>`).join('') || '<li class="text-gray-500">—</li>';
-  document.getElementById('cmp-only-b').innerHTML = overlap.only_b.map(a => `<li>${a}</li>`).join('') || '<li class="text-gray-500">—</li>';
-
-  document.getElementById('cmp-shared-tracks').innerHTML = overlap.shared_tracks.length
-    ? overlap.shared_tracks.map(t => `<li><span class="text-white">${t.track}</span> <span class="text-gray-500">— ${t.artist}</span></li>`).join('')
-    : '<li class="text-gray-500">No shared tracks in top 50.</li>';
-
   document.getElementById('compare-results').classList.remove('hidden');
+  _renderCompareResults(data);
+}
+
+const _CMP_COLORS = ['#1DB954', '#1e90ff', '#ff6b6b', '#ffd700', '#b39ddb'];
+
+function _drawOverlapDonut(id, overlap) {
+  makeChart(id, {
+    type: 'doughnut',
+    data: {
+      labels: ['Shared', 'Only them', 'Only you'],
+      datasets: [{ data: [overlap.shared, overlap.only_other, overlap.only_self], backgroundColor: ['#1DB954', '#1e90ff', '#444'], borderWidth: 0 }],
+    },
+    options: { cutout: '60%', plugins: { legend: { display: false }, tooltip: { enabled: true, callbacks: { label: ctx => ` ${ctx.parsed}%` } } }, animation: { duration: 600 } },
+  });
+}
+
+function _drawPairGauge(id, score) {
+  makeChart(id, {
+    type: 'doughnut',
+    data: {
+      datasets: [{ data: [score, 100 - score], backgroundColor: ['#1DB954', '#2a2a2a'], borderWidth: 0 }],
+    },
+    options: {
+      cutout: '72%',
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      animation: { duration: 600 },
+    },
+    plugins: [{
+      id: `gauge-text-${id}`,
+      afterDraw(chart) {
+        const { ctx, chartArea: { width, height, left, top } } = chart;
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const cx = left + width / 2, cy = top + height / 2;
+        ctx.font = `bold ${Math.round(width * 0.22)}px 'Segoe UI', system-ui, sans-serif`;
+        ctx.fillStyle = '#1DB954';
+        ctx.fillText(score, cx, cy - height * 0.06);
+        ctx.font = `${Math.round(width * 0.1)}px 'Segoe UI', system-ui, sans-serif`;
+        ctx.fillStyle = '#888';
+        ctx.fillText('/ 100', cx, cy + height * 0.13);
+        ctx.restore();
+      },
+    }],
+  });
+}
+
+function _renderCompareResults(data) {
+  const { users } = data;
+
+  // Stats table (no Similarity row — shown per pair below)
+  const table = document.getElementById('cmp-stats-table');
+  const statRows = [
+    ['Total plays',     u => u.stats.total_plays.toLocaleString()],
+    ['Total hours',     u => u.stats.total_hours.toLocaleString()],
+    ['Unique artists',  u => u.stats.unique_artists.toLocaleString()],
+    ['Unique tracks',   u => u.stats.unique_tracks.toLocaleString()],
+    ['Listening since', u => u.stats.first_listen],
+  ];
+  const headerCells = users.map((u, i) =>
+    `<th class="${i === 0 ? 'text-green-400' : ''}">@${esc(u.username)}</th>`
+  ).join('');
+  const bodyRows = statRows.map(([label, fn]) =>
+    `<tr><td>${label}</td>${users.map(u => `<td>${fn(u)}</td>`).join('')}</tr>`
+  ).join('');
+  table.innerHTML = `<thead><tr><th></th>${headerCells}</tr></thead><tbody>${bodyRows}</tbody>`;
+
+  // Radar chart — normalized stats per user
+  const statKeys = ['total_plays', 'total_hours', 'unique_artists', 'unique_tracks'];
+  const statLabels = ['Plays', 'Hours', 'Artists', 'Tracks'];
+  const maxes = statKeys.map(k => Math.max(...users.map(u => u.stats[k])) || 1);
+  makeChart('cmp-radar-chart', {
+    type: 'radar',
+    data: {
+      labels: statLabels,
+      datasets: users.map((u, i) => ({
+        label: '@' + u.username,
+        data: statKeys.map((k, ki) => Math.round(u.stats[k] / maxes[ki] * 100)),
+        borderColor: _CMP_COLORS[i % _CMP_COLORS.length],
+        backgroundColor: _CMP_COLORS[i % _CMP_COLORS.length] + '33',
+        pointBackgroundColor: _CMP_COLORS[i % _CMP_COLORS.length],
+        borderWidth: 2,
+        pointRadius: 3,
+      })),
+    },
+    options: {
+      scales: { r: { min: 0, max: 100, ticks: { display: false }, grid: { color: '#333' }, pointLabels: { color: '#b3b3b3', font: { size: 12 } } } },
+      plugins: { legend: { position: 'bottom', labels: { color: '#b3b3b3', boxWidth: 12, padding: 16 } } },
+    },
+  });
+
+  // Pairwise breakdown — tabular sections (self vs each other user)
+  const pairsContainer = document.getElementById('cmp-pairs');
+  const pairs = data.pairs || [];
+
+  function _cmpSection(title, colsHtml) {
+    return `<div class="card mb-4"><h3 class="font-semibold mb-4">${title}</h3><div class="cmp-row">${colsHtml}</div></div>`;
+  }
+  function _artistCardHtml(a) {
+    return `<div class="cmp-artist-card">
+      ${a.image ? `<img src="${esc(a.image)}" alt="${esc(a.name)}">` : '<div class="cmp-artist-img-placeholder"></div>'}
+      <span title="${esc(a.name)}">${esc(a.name)}</span>
+    </div>`;
+  }
+  function _trackListHtml(tracks, emptyMsg) {
+    return tracks.length
+      ? `<ul class="text-sm text-gray-300 space-y-1">${tracks.map(t => `<li><span class="text-white">${esc(t.track)}</span> <span class="text-gray-500">— ${esc(t.artist)}</span></li>`).join('')}</ul>`
+      : `<p class="text-gray-500 text-sm">${emptyMsg}</p>`;
+  }
+
+  // Build ALL HTML at once — single innerHTML assignment prevents canvas destruction
+  let pairsHtml = '';
+
+  if (pairs.length) {
+    // Section 1: Musical Similarity (gauges)
+    pairsHtml += _cmpSection('Musical Similarity',
+      pairs.map((p, i) => `
+        <div class="cmp-col">
+          <p class="cmp-col-label">@${esc(p.username)}</p>
+          <canvas id="cmp-gauge-${i}" class="cmp-gauge-canvas"></canvas>
+        </div>`).join(''));
+
+    // Section 2: Artist overlap donuts
+    pairsHtml += _cmpSection('Artist overlap (% of top 100)',
+      pairs.map((p, i) => `
+        <div class="cmp-col">
+          <p class="cmp-col-label">@${esc(p.username)}</p>
+          <canvas id="cmp-donut-${i}" style="max-width:160px;max-height:160px;width:100%;display:block;margin:0 auto"></canvas>
+          <div class="flex gap-2 justify-center mt-2 text-xs text-gray-400 flex-wrap">
+            <span><span style="color:#1DB954">■</span> Shared</span>
+            <span><span style="color:#1e90ff">■</span> Only them</span>
+            <span><span style="color:#666">■</span> Only you</span>
+          </div>
+        </div>`).join(''));
+
+    // Section 3: Artists you both love
+    pairsHtml += _cmpSection('Artists you both love',
+      pairs.map(p => `
+        <div class="cmp-col">
+          <p class="cmp-col-label">@${esc(p.username)}</p>
+          <div class="flex flex-wrap gap-2">${p.shared_artists.length
+            ? p.shared_artists.map(_artistCardHtml).join('')
+            : '<p class="text-gray-500 text-sm">None in top 100</p>'}</div>
+        </div>`).join(''));
+
+    // Section 4: Only @user artists
+    pairsHtml += _cmpSection('Only @' + pairs.map(p => esc(p.username)).join(' / @'),
+      pairs.map(p => `
+        <div class="cmp-col">
+          <p class="cmp-col-label">@${esc(p.username)}</p>
+          <div class="flex flex-wrap gap-2">${p.only_other_artists.length
+            ? p.only_other_artists.map(_artistCardHtml).join('')
+            : '<p class="text-gray-500 text-sm">None unique</p>'}</div>
+        </div>`).join(''));
+
+    // Section 5: Tracks you both play
+    pairsHtml += _cmpSection('Tracks you both play',
+      pairs.map(p => `
+        <div class="cmp-col">
+          <p class="cmp-col-label">@${esc(p.username)}</p>
+          ${_trackListHtml(p.shared_tracks, 'None in top 50')}
+        </div>`).join(''));
+
+    // Section 6: Only @user tracks
+    pairsHtml += _cmpSection('Only @' + pairs.map(p => esc(p.username)).join(' / @') + ' (tracks)',
+      pairs.map(p => `
+        <div class="cmp-col">
+          <p class="cmp-col-label">@${esc(p.username)}</p>
+          ${_trackListHtml(p.only_other_tracks, 'None unique')}
+        </div>`).join(''));
+  }
+
+  pairsContainer.innerHTML = pairsHtml;
+
+  // Draw all charts after DOM is fully set (single innerHTML pass above)
+  pairs.forEach((p, i) => {
+    _drawPairGauge(`cmp-gauge-${i}`, p.similarity);
+    _drawOverlapDonut(`cmp-donut-${i}`, p.artist_overlap);
+  });
+
+  // Hour-of-day line chart (all users)
+  const hourLabels = Array.from({length: 24}, (_, h) => h === 0 ? '12am' : h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h-12}pm`);
+  makeChart('cmp-hour-chart', {
+    type: 'line',
+    data: {
+      labels: hourLabels,
+      datasets: users.map((u, i) => ({
+        label: '@' + u.username,
+        data: u.hourly_plays,
+        borderColor: _CMP_COLORS[i % _CMP_COLORS.length],
+        backgroundColor: _CMP_COLORS[i % _CMP_COLORS.length] + '22',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 2,
+        borderWidth: 2,
+      })),
+    },
+    options: {
+      scales: {
+        x: { grid: { color: '#333' }, ticks: { color: '#888', maxRotation: 0 } },
+        y: { grid: { color: '#333' }, ticks: { color: '#888' }, beginAtZero: true },
+      },
+      plugins: { legend: { position: 'bottom', labels: { color: '#b3b3b3', boxWidth: 12, padding: 16 } } },
+    },
+  });
+
+  // Skip rate bar chart (all users)
+  makeChart('cmp-skip-chart', {
+    type: 'bar',
+    data: {
+      labels: users.map(u => '@' + u.username),
+      datasets: [{
+        label: 'Skip rate %',
+        data: users.map(u => u.skip_rate),
+        backgroundColor: users.map((_, i) => _CMP_COLORS[i % _CMP_COLORS.length] + 'cc'),
+        borderWidth: 0,
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      indexAxis: 'y',
+      scales: {
+        x: { grid: { color: '#333' }, ticks: { color: '#888', callback: v => v + '%' }, max: 100 },
+        y: { grid: { display: false }, ticks: { color: '#b3b3b3' } },
+      },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` ${ctx.parsed.x}%` } } },
+    },
+  });
 }
 
 // ── Admin panel ───────────────────────────────────────────────────────
@@ -1520,8 +1857,13 @@ async function loadCompare() {
 let _adminCacheType = 'artist';
 let _adminFixType   = 'artist';
 let _adminFixTarget = null;  // { type, name, album?, artist? }
-let _adminResetTarget = null; // { user_id, username }
+let _adminResetTarget = null;     // { user_id, username }
+let _adminClearDataTarget = null; // { user_id, username }
 let _adminCachePage = 1;
+let _adminUsersData = [];
+let _adminUsersSort = { col: 'username', asc: true };
+let _adminCacheEmptyOnly = false;
+let _meIsPublic = true;
 
 function adminShowPanel(name) {
   ['overview','users','image-cache','bulk-refresh'].forEach(p => {
@@ -1538,38 +1880,84 @@ function adminShowPanel(name) {
 async function loadAdminOverview() {
   const data = await fetch('/api/admin/overview').then(r => r.json());
   const el = document.getElementById('admin-overview-content');
+  const apiColor = data.api_available ? '#1DB954' : '#ff6b6b';
+  const apiLabel = data.api_available ? '✓ API available' : '✗ API not configured';
   const cards = [
-    ['Users', data.users, ''],
-    ['Artists cached', data.artist_images_cached, ''],
-    ['Albums cached', data.album_images_cached, ''],
-    ['Genres cached', data.artist_genres_cached, ''],
-    ['Empty artist images', data.empty_artist_images, data.empty_artist_images > 0 ? 'color:#FFA726' : ''],
-    ['Empty album images', data.empty_album_images, data.empty_album_images > 0 ? 'color:#FFA726' : ''],
+    { label: 'Users', val: data.users, style: '', extra: '' },
+    { label: 'Artists cached', val: data.artist_images_cached, style: '', extra: '' },
+    { label: 'Albums cached', val: data.album_images_cached, style: '', extra: '' },
+    { label: 'Genres cached', val: data.artist_genres_cached, style: '', extra: '' },
+    {
+      label: 'Empty artist images', val: data.empty_artist_images,
+      style: data.empty_artist_images > 0 ? 'color:#FFA726' : '',
+      extra: data.empty_artist_images > 0 ? `onclick="adminShowEmptyImages('artist')" style="cursor:pointer" title="Click to filter image cache"` : '',
+    },
+    {
+      label: 'Empty album images', val: data.empty_album_images,
+      style: data.empty_album_images > 0 ? 'color:#FFA726' : '',
+      extra: data.empty_album_images > 0 ? `onclick="adminShowEmptyImages('album')" style="cursor:pointer" title="Click to filter image cache"` : '',
+    },
+    { label: apiLabel, val: '', style: `color:${apiColor}`, extra: '' },
   ];
-  el.innerHTML = cards.map(([label, val, style]) =>
-    `<div class="stat-card"><div class="value" style="${style}">${val.toLocaleString()}</div><div class="label">${label}</div></div>`
+  el.innerHTML = cards.map(({ label, val, style, extra }) =>
+    `<div class="stat-card" ${extra}><div class="value" style="${style}">${val !== '' ? Number(val).toLocaleString() : ''}</div><div class="label">${label}</div></div>`
   ).join('');
 }
 
+function adminShowEmptyImages(type) {
+  _adminCacheEmptyOnly = true;
+  adminShowPanel('image-cache');
+  adminSetCacheType(type);
+}
+
+function clearEmptyFilter() {
+  _adminCacheEmptyOnly = false;
+  adminLoadImageCache(1);
+}
+
 async function loadAdminUsers() {
-  const users = await fetch('/api/admin/users').then(r => r.json());
-  const tbody = document.getElementById('admin-users-table');
-  tbody.innerHTML = users.map(u => `
+  _adminUsersData = await fetch('/api/admin/users').then(r => r.json());
+  _renderAdminUsers();
+}
+
+function _renderAdminUsers() {
+  const q = (document.getElementById('admin-users-filter')?.value || '').toLowerCase();
+  let users = _adminUsersData.filter(u => u.username.toLowerCase().includes(q));
+  const { col, asc } = _adminUsersSort;
+  users.sort((a, b) => {
+    const va = a[col] ?? '', vb = b[col] ?? '';
+    return asc ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
+  });
+  const arrow = c => c === col ? (asc ? ' ↑' : ' ↓') : '';
+  const cols = ['username', 'size_mb', 'data_date', 'file_count', 'created_at'];
+  const labels = ['Username', 'Size (MB)', 'Data date', 'Files', 'Created'];
+  document.getElementById('admin-users-thead').innerHTML = `<tr class="text-left text-gray-400 border-b border-white/10">
+    ${cols.map((c, i) => `<th class="py-2 px-3 cursor-pointer select-none hover:text-white" onclick="adminSortUsers('${c}')">${labels[i]}${arrow(c)}</th>`).join('')}
+    <th class="py-2 px-3 text-right">Actions</th>
+  </tr>`;
+  document.getElementById('admin-users-table').innerHTML = users.map(u => `
     <tr class="table-row border-b border-white/5">
-      <td class="py-2 px-3 font-medium">${u.username}</td>
-      <td class="py-2 px-3 text-center">
-        <button onclick="adminTogglePublic('${u.user_id}',${!u.is_public})" class="text-xs px-2 py-0.5 rounded ${u.is_public ? 'bg-green-900/50 text-green-400' : 'bg-gray-700 text-gray-400'}">${u.is_public ? 'Yes' : 'No'}</button>
-      </td>
+      <td class="py-2 px-3 font-medium">${esc(u.username)}</td>
+      <td class="py-2 px-3 text-center text-gray-400">${u.size_mb ?? '—'}</td>
+      <td class="py-2 px-3 text-center text-gray-400">${u.data_date || '—'}</td>
       <td class="py-2 px-3 text-center text-gray-400">${u.file_count}</td>
-      <td class="py-2 px-3 text-gray-400 text-xs">${u.created_at.slice(0,10)}</td>
+      <td class="py-2 px-3 text-gray-400 text-xs">${(u.created_at || '').slice(0, 10)}</td>
       <td class="py-2 px-3 text-right">
         <div class="flex gap-1 justify-end flex-wrap">
+          <button onclick="adminTogglePublic('${u.user_id}',${!u.is_public})" class="text-xs px-2 py-0.5 rounded ${u.is_public ? 'bg-green-900/50 text-green-400' : 'bg-gray-700 text-gray-400'}">${u.is_public ? 'Public' : 'Private'}</button>
           <button onclick="adminImpersonate('${u.username}')" class="year-btn text-xs">View data</button>
           <button onclick="adminOpenReset('${u.user_id}','${u.username}')" class="year-btn text-xs">Reset pw</button>
+          <button onclick="adminOpenClearData('${u.user_id}','${u.username}')" class="year-btn text-xs" style="border-color:#ffd70055">Clear data</button>
           <button onclick="adminDeleteUser('${u.user_id}','${u.username}')" class="year-btn-clear text-xs" style="border-color:#ff6b6b55">Delete</button>
         </div>
       </td>
     </tr>`).join('');
+}
+
+function adminSortUsers(col) {
+  if (_adminUsersSort.col === col) { _adminUsersSort.asc = !_adminUsersSort.asc; }
+  else { _adminUsersSort = { col, asc: true }; }
+  _renderAdminUsers();
 }
 
 async function adminTogglePublic(userId, newVal) {
@@ -1612,6 +2000,24 @@ async function adminConfirmReset() {
   }
 }
 
+function adminOpenClearData(userId, username) {
+  _adminClearDataTarget = { user_id: userId, username };
+  document.getElementById('admin-clear-data-username').textContent = username;
+  document.getElementById('admin-clear-data-error').textContent = '';
+  document.getElementById('admin-clear-data-modal').classList.remove('hidden');
+}
+
+async function adminConfirmClearData() {
+  const errEl = document.getElementById('admin-clear-data-error');
+  const res = await fetch(`/api/admin/users/${_adminClearDataTarget.user_id}/data`, { method: 'DELETE' });
+  if (res.ok) {
+    document.getElementById('admin-clear-data-modal').classList.add('hidden');
+    loadAdminUsers();
+  } else {
+    errEl.textContent = (await res.json()).detail || 'Error';
+  }
+}
+
 function adminImpersonate(username) {
   window._adminViewAs = username;
   yearsInitialized = false;
@@ -1621,6 +2027,21 @@ function adminImpersonate(username) {
   // Switch to Dashboard tab to trigger a fresh load with the new apiFetch routing
   const dashBtn = document.querySelector('[data-tab="dashboard"]');
   if (dashBtn) dashBtn.click();
+}
+
+async function setPublicProfile(isPublic) {
+  _meIsPublic = isPublic;
+  _updateProfileVisToggle();
+  await fetch('/api/users/me', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_public: isPublic }),
+  });
+}
+
+function _updateProfileVisToggle() {
+  document.querySelectorAll('.profile-vis-opt').forEach(b =>
+    b.classList.toggle('active', b.dataset.vis === (_meIsPublic ? 'public' : 'private')));
 }
 
 function adminStopImpersonating() {
@@ -1647,6 +2068,9 @@ async function adminLoadImageCache(page) {
   _adminCachePage = page;
   const q = document.getElementById('admin-cache-search').value;
   const params = new URLSearchParams({type: _adminCacheType, q, page, limit: 50});
+  if (_adminCacheEmptyOnly) params.set('empty_only', 'true');
+  const noticeEl = document.getElementById('admin-cache-empty-notice');
+  if (noticeEl) noticeEl.classList.toggle('hidden', !_adminCacheEmptyOnly);
   const data = await fetch('/api/admin/image-cache?' + params).then(r => r.json());
   const tbody = document.getElementById('admin-cache-table');
   tbody.innerHTML = data.items.map(item => {
@@ -1664,7 +2088,7 @@ async function adminLoadImageCache(page) {
       <td class="py-2 px-3">${thumb}</td>
       <td class="py-2 px-3 text-sm">${esc(name)}</td>
       <td class="py-2 px-3 text-xs text-gray-400 hidden md:table-cell">${(item.fetched_at||'').slice(0,10)}</td>
-      <td class="py-2 px-3 text-right"><div class="flex gap-1 justify-end">${fixBtn}${delBtn}</div></td>
+      <td class="py-2 px-3 text-right" style="white-space:nowrap"><div class="flex gap-1 justify-end">${fixBtn}${delBtn}</div></td>
     </tr>`;
   }).join('');
 
@@ -1798,10 +2222,14 @@ async function initApp() {
   const me = await meRes.json();
   document.getElementById('nav-username').textContent = '@' + me.username;
   document.getElementById('nav-user-area').style.cssText = 'display:flex!important';
-  document.getElementById('compare-user-a').value = me.username;
+  _cmpCurrentUser = me.username;
+  _cmpSlots = [{ username: '', confirmed: false }];
+  _renderCompareSlots();
   if (me.is_admin) {
     document.getElementById('tab-btn-admin').style.display = '';
   }
+  _meIsPublic = me.is_public ?? true;
+  _updateProfileVisToggle();
 
   const { has_data } = await fetch('/api/status').then(r => r.json());
   if (!has_data) showSplash(); else loadDashboard();
@@ -1831,12 +2259,21 @@ window.setHourlyMode = setHourlyMode;
 window.setDailyMode = setDailyMode;
 window.selectArtist = selectArtist;
 window.loadCompare = loadCompare;
+window.addCompareUser = addCompareUser;
+window.removeCompareUser = removeCompareUser;
 window.togglePasswordVisibility = togglePasswordVisibility;
 window.adminShowPanel = adminShowPanel;
 window.adminTogglePublic = adminTogglePublic;
 window.adminDeleteUser = adminDeleteUser;
 window.adminOpenReset = adminOpenReset;
 window.adminConfirmReset = adminConfirmReset;
+window.adminOpenClearData = adminOpenClearData;
+window.adminConfirmClearData = adminConfirmClearData;
+window.adminSortUsers = adminSortUsers;
+window.adminShowEmptyImages = adminShowEmptyImages;
+window.clearEmptyFilter = clearEmptyFilter;
+window.setPublicProfile = setPublicProfile;
+window._renderAdminUsers = _renderAdminUsers;
 window.adminImpersonate = adminImpersonate;
 window.adminStopImpersonating = adminStopImpersonating;
 window.adminSetCacheType = adminSetCacheType;
