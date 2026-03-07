@@ -117,14 +117,16 @@
   </div>
 </nav>
 
+<!-- Global year filter — shared across Dashboard, Top Artists/Albums/Tracks, Timeline, Habits -->
+<div id="global-year-bar" class="max-w-7xl mx-auto px-3 sm:px-4 pt-3">
+  <div id="global-year-btns" class="flex flex-wrap gap-1"></div>
+</div>
+
 <!-- Main Content -->
 <main class="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6">
 
   <!-- Dashboard -->
   <section id="tab-dashboard">
-    <div class="flex flex-wrap items-center gap-2 mb-4">
-      <div id="dash-year-btns" class="flex flex-wrap gap-1"></div>
-    </div>
     <div id="dashboard-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="dashboard-content" class="hidden">
       <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6" id="dashboard-stats"></div>
@@ -142,7 +144,6 @@
   <!-- Top Artists -->
   <section id="tab-top-artists" class="hidden">
     <div class="flex flex-wrap items-center gap-2 mb-4">
-      <div id="artists-year-btns" class="flex flex-wrap gap-1"></div>
       <label class="text-sm text-gray-400 ml-2">Limit</label>
       <select id="artists-limit" class="filter-input">
         <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option>
@@ -165,7 +166,6 @@
   <!-- Top Albums -->
   <section id="tab-top-albums" class="hidden">
     <div class="flex flex-wrap items-center gap-2 mb-4">
-      <div id="albums-year-btns" class="flex flex-wrap gap-1"></div>
       <label class="text-sm text-gray-400 ml-2">Limit</label>
       <select id="albums-limit" class="filter-input">
         <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option>
@@ -188,7 +188,6 @@
   <!-- Top Tracks -->
   <section id="tab-top-tracks" class="hidden">
     <div class="flex flex-wrap items-center gap-2 mb-4">
-      <div id="tracks-year-btns" class="flex flex-wrap gap-1"></div>
       <label class="text-sm text-gray-400 ml-2">Limit</label>
       <select id="tracks-limit" class="filter-input">
         <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option>
@@ -210,9 +209,6 @@
 
   <!-- Timeline -->
   <section id="tab-timeline" class="hidden">
-    <div class="flex flex-wrap items-center gap-2 mb-4">
-      <div id="timeline-year-btns" class="flex flex-wrap gap-1"></div>
-    </div>
     <div id="timeline-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="timeline-content" class="hidden">
       <div class="card mb-6"><h3 class="text-lg font-semibold mb-4">Yearly Listening Hours</h3><canvas id="chart-yearly" height="80"></canvas></div>
@@ -226,9 +222,6 @@
 
   <!-- Habits -->
   <section id="tab-habits" class="hidden">
-    <div class="flex flex-wrap items-center gap-2 mb-4">
-      <div id="habits-year-btns" class="flex flex-wrap gap-1"></div>
-    </div>
     <div id="habits-loading" class="flex items-center justify-center py-20"><div class="loader"></div></div>
     <div id="habits-content" class="hidden">
       <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6" id="habits-stats"></div>
@@ -433,7 +426,7 @@
         <h3 class="font-semibold mb-3">Fix an Image</h3>
         <p class="text-xs text-gray-400 mb-3">Search Spotify for an artist or album, pick the right image, and save it to the cache.</p>
         <div class="flex gap-2 mb-3">
-          <input id="admin-fix-query" class="filter-input flex-1" placeholder="Artist or album name…">
+          <input id="admin-fix-query" class="filter-input flex-1" placeholder="Artist/album name or Spotify ID…">
           <div class="unit-switch">
             <button class="unit-opt active" data-fix-type="artist" onclick="adminSetFixType('artist')">Artist</button>
             <button class="unit-opt" data-fix-type="album" onclick="adminSetFixType('album')">Album</button>

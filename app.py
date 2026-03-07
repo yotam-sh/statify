@@ -55,6 +55,7 @@ JWT_EXPIRE_DAYS = 7
 ADMIN_SECRET  = os.getenv("ADMIN_SECRET", "")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
 _SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true"
+_SPOTIFY_ID_RE = re.compile(r'^[0-9A-Za-z]{22}$')
 
 _MISSING_SECRETS: list[str] = []
 if not JWT_SECRET:
@@ -838,7 +839,11 @@ async def login(request: Request):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     token = _create_token(user["user_id"], user["username"])
-    response = JSONResponse({"ok": True, "username": user["username"]})
+    response = JSONResponse({
+        "ok": True,
+        "username": user["username"],
+        "is_admin": bool(ADMIN_USERNAME and user["username"] == ADMIN_USERNAME),
+    })
     response.set_cookie(
         "auth_token", token,
         httponly=True,
@@ -1080,7 +1085,20 @@ async def admin_search_image(
     sp = get_client_credentials_client()
     results = []
     try:
-        if type == "artist":
+        if _SPOTIFY_ID_RE.match(q):
+            # Direct ID lookup — unambiguous, no search ranking
+            if type == "artist":
+                item = sp.artist(q)
+                images = item.get("images", [])
+                url = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
+                results.append({"name": item["name"], "id": item["id"], "image": url})
+            else:
+                item = sp.album(q)
+                images = item.get("images", [])
+                url = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
+                artist = item["artists"][0]["name"] if item.get("artists") else ""
+                results.append({"name": item["name"], "artist": artist, "id": item["id"], "image": url})
+        elif type == "artist":
             data = sp.search(q=f"artist:{q}", type="artist", limit=5)
             for item in data.get("artists", {}).get("items", []):
                 images = item.get("images", [])

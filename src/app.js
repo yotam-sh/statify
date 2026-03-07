@@ -51,6 +51,7 @@ function apiFetch(path, options) {
 }
 
 // ── Tab navigation ───────────────────────────────────────────────────
+const _YEAR_FILTER_TABS = new Set(['dashboard', 'top-artists', 'top-albums', 'top-tracks', 'timeline', 'habits']);
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => { b.classList.remove('active'); b.classList.add('text-gray-400'); });
@@ -58,9 +59,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('main > section').forEach(s => s.classList.add('hidden'));
     const tab = btn.dataset.tab;
     document.getElementById('tab-' + tab).classList.remove('hidden');
-    // Load on first visit
+    document.getElementById('global-year-bar').classList.toggle('hidden', !_YEAR_FILTER_TABS.has(tab));
+    // Load on first visit (skip if already preloaded for current filter)
     const loaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-tracks': loadTopTracks, 'top-albums': loadTopAlbums, timeline: loadTimeline, habits: loadHabits, 'deep-dive': loadDeepDiveSuggestions, admin: loadAdmin };
-    if (loaders[tab]) loaders[tab]();
+    if (loaders[tab] && !_preloadedTabs.has(tab)) loaders[tab]();
+    _preloadedTabs.delete(tab);
   });
 });
 
@@ -439,14 +442,24 @@ function buildTreemap(id, tableData, labelKey, valueKey, imgLookup, rounded, gro
 }
 
 // ── Filter helpers ───────────────────────────────────────────────────
-function buildFilterParams(yearBtnsId) {
-  const container = document.getElementById(yearBtnsId);
+function buildFilterParams() {
+  const container = document.getElementById('global-year-btns');
   if (!container) return '';
   const allBtn = container.querySelector('.year-btn[data-year="all"]');
   if (allBtn?.classList.contains('active')) return '';
   const selected = [...container.querySelectorAll('.year-btn.active')].map(b => b.dataset.year).filter(y => y !== 'all');
   if (!selected.length) return '';
   return `&years=${selected.join(',')}`;
+}
+
+function reloadActiveTab() {
+  _preloadedTabs.clear();
+  const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+  const filterLoaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-albums': loadTopAlbums, 'top-tracks': loadTopTracks, timeline: loadTimeline, habits: loadHabits };
+  filterLoaders[activeTab]?.();
+  for (const [tab, fn] of Object.entries(filterLoaders)) {
+    if (tab !== activeTab) fn(true); // silent background preload
+  }
 }
 
 function setupYearButtons(containerId, years, onSelect) {
@@ -487,18 +500,20 @@ function setupYearButtons(containerId, years, onSelect) {
   });
 }
 
-let yearsInitialized = {};
+let yearsInitialized = false;
+let limitsInitialized = {};
+const _preloadedTabs = new Set();
 
 // ── Dashboard ────────────────────────────────────────────────────────
-async function loadDashboard() {
-  showLoading('dashboard');
+async function loadDashboard(silent) {
+  if (silent !== true) showLoading('dashboard');
 
-  const params = buildFilterParams('dash-year-btns');
+  const params = buildFilterParams();
   const data = await apiFetch('/dashboard?' + params).then(r => r.json());
 
-  if (!yearsInitialized.dashboard && data.years) {
-    setupYearButtons('dash-year-btns', data.years, loadDashboard);
-    yearsInitialized.dashboard = true;
+  if (!yearsInitialized && data.years) {
+    setupYearButtons('global-year-btns', data.years, reloadActiveTab);
+    yearsInitialized = true;
   }
 
   const s = data.stats;
@@ -555,6 +570,7 @@ async function loadDashboard() {
   }).join('');
 
   showContent('dashboard');
+  _preloadedTabs.add('dashboard');
 
   // Resolve uncached images in background
   const missingArtists = ta.labels.filter((n, i) => !ta.images || !ta.images[i]);
@@ -563,19 +579,22 @@ async function loadDashboard() {
 }
 
 // ── Top Artists ──────────────────────────────────────────────────────
-async function loadTopArtists() {
+async function loadTopArtists(silent) {
   const limit = document.getElementById('artists-limit').value;
-  const params = `limit=${limit}` + buildFilterParams('artists-year-btns');
+  const params = `limit=${limit}` + buildFilterParams();
 
-  showLoading('top-artists');
+  if (silent !== true) showLoading('top-artists');
 
   const data = await apiFetch('/top-artists?' + params).then(r => r.json());
 
-  if (!yearsInitialized.topArtists) {
+  if (!yearsInitialized) {
     const dashData = await apiFetch('/dashboard').then(r => r.json());
-    setupYearButtons('artists-year-btns', dashData.years, loadTopArtists);
+    setupYearButtons('global-year-btns', dashData.years, reloadActiveTab);
+    yearsInitialized = true;
+  }
+  if (!limitsInitialized.topArtists) {
     document.getElementById('artists-limit').addEventListener('change', loadTopArtists);
-    yearsInitialized.topArtists = true;
+    limitsInitialized.topArtists = true;
   }
 
   const artistImgLookup = {};
@@ -585,6 +604,7 @@ async function loadTopArtists() {
     `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, true, r.artist)}</td><td class="py-2 px-3 font-medium">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`
   ).join('');
   showContent('top-artists');
+  _preloadedTabs.add('top-artists');
   requestAnimationFrame(() => {
     buildTreemap('chart-artists-bar', data.table.slice(0, 50), 'artist', 'hours', artistImgLookup, true);
   });
@@ -604,19 +624,22 @@ async function loadTopArtists() {
 }
 
 // ── Top Tracks ───────────────────────────────────────────────────────
-async function loadTopTracks() {
+async function loadTopTracks(silent) {
   const limit = document.getElementById('tracks-limit').value;
-  const params = `limit=${limit}` + buildFilterParams('tracks-year-btns');
+  const params = `limit=${limit}` + buildFilterParams();
 
-  showLoading('top-tracks');
+  if (silent !== true) showLoading('top-tracks');
 
   const data = await apiFetch('/top-tracks?' + params).then(r => r.json());
 
-  if (!yearsInitialized.topTracks) {
+  if (!yearsInitialized) {
     const dashData = await apiFetch('/dashboard').then(r => r.json());
-    setupYearButtons('tracks-year-btns', dashData.years, loadTopTracks);
+    setupYearButtons('global-year-btns', dashData.years, reloadActiveTab);
+    yearsInitialized = true;
+  }
+  if (!limitsInitialized.topTracks) {
     document.getElementById('tracks-limit').addEventListener('change', loadTopTracks);
-    yearsInitialized.topTracks = true;
+    limitsInitialized.topTracks = true;
   }
 
   const trackImgLookup = {};
@@ -627,6 +650,7 @@ async function loadTopTracks() {
     return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${esc(r.track)}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
   showContent('top-tracks');
+  _preloadedTabs.add('top-tracks');
   requestAnimationFrame(() => {
     buildTreemap('chart-tracks-bar', data.table.slice(0, 50), 'track', 'hours', trackImgLookup, false, 'album',
       (label, raw, meta) => {
@@ -670,19 +694,22 @@ async function loadTopTracks() {
 }
 
 // ── Top Albums ──────────────────────────────────────────────────────
-async function loadTopAlbums() {
+async function loadTopAlbums(silent) {
   const limit = document.getElementById('albums-limit').value;
-  const params = `limit=${limit}` + buildFilterParams('albums-year-btns');
+  const params = `limit=${limit}` + buildFilterParams();
 
-  showLoading('top-albums');
+  if (silent !== true) showLoading('top-albums');
 
   const data = await apiFetch('/top-albums?' + params).then(r => r.json());
 
-  if (!yearsInitialized.topAlbums) {
+  if (!yearsInitialized) {
     const dashData = await apiFetch('/dashboard').then(r => r.json());
-    setupYearButtons('albums-year-btns', dashData.years, loadTopAlbums);
+    setupYearButtons('global-year-btns', dashData.years, reloadActiveTab);
+    yearsInitialized = true;
+  }
+  if (!limitsInitialized.topAlbums) {
     document.getElementById('albums-limit').addEventListener('change', loadTopAlbums);
-    yearsInitialized.topAlbums = true;
+    limitsInitialized.topAlbums = true;
   }
 
   const albumImgLookup = {};
@@ -693,6 +720,7 @@ async function loadTopAlbums() {
     return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${esc(r.album)}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.tracks}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
   showContent('top-albums');
+  _preloadedTabs.add('top-albums');
   requestAnimationFrame(() => {
     buildTreemap('chart-albums-bar', data.table.slice(0, 50), 'album', 'hours', albumImgLookup, false, 'artist',
       (label, raw, meta) => {
@@ -733,15 +761,15 @@ async function loadTopAlbums() {
 }
 
 // ── Timeline ─────────────────────────────────────────────────────────
-async function loadTimeline() {
-  showLoading('timeline');
+async function loadTimeline(silent) {
+  if (silent !== true) showLoading('timeline');
 
-  const params = buildFilterParams('timeline-year-btns');
+  const params = buildFilterParams();
   const data = await apiFetch('/timeline?' + params).then(r => r.json());
 
-  if (!yearsInitialized.timeline && data.years) {
-    setupYearButtons('timeline-year-btns', data.years, loadTimeline);
-    yearsInitialized.timeline = true;
+  if (!yearsInitialized && data.years) {
+    setupYearButtons('global-year-btns', data.years, reloadActiveTab);
+    yearsInitialized = true;
   }
 
   // Yearly bar chart (issue #8: axis labels)
@@ -1048,6 +1076,7 @@ async function loadTimeline() {
   });
 
   showContent('timeline');
+  _preloadedTabs.add('timeline');
 }
 
 // ── Habits ────────────────────────────────────────────────────────────
@@ -1094,16 +1123,16 @@ function setDailyMode(mode) {
   renderDailyChart();
 }
 
-async function loadHabits() {
-  showLoading('habits');
+async function loadHabits(silent) {
+  if (silent !== true) showLoading('habits');
 
-  const params = buildFilterParams('habits-year-btns');
+  const params = buildFilterParams();
   const data = await apiFetch('/habits?' + params).then(r => r.json());
   habitsData = data;
 
-  if (!yearsInitialized.habits && data.years) {
-    setupYearButtons('habits-year-btns', data.years, loadHabits);
-    yearsInitialized.habits = true;
+  if (!yearsInitialized && data.years) {
+    setupYearButtons('global-year-btns', data.years, reloadActiveTab);
+    yearsInitialized = true;
   }
 
   document.getElementById('habits-stats').innerHTML =
@@ -1157,6 +1186,7 @@ async function loadHabits() {
   });
 
   showContent('habits');
+  _preloadedTabs.add('habits');
 }
 
 // ── Artist Deep-Dive ─────────────────────────────────────────────────
@@ -1315,6 +1345,10 @@ async function doLogin(event) {
   hideLogin();
   document.getElementById('nav-username').textContent = '@' + data.username;
   document.getElementById('nav-user-area').style.cssText = 'display:flex!important';
+  document.getElementById('compare-user-a').value = data.username;
+  if (data.is_admin) {
+    document.getElementById('tab-btn-admin').style.display = '';
+  }
 
   const { has_data } = await fetch('/api/status').then(r => r.json());
   if (!has_data) showSplash(); else loadDashboard();
@@ -1551,7 +1585,8 @@ async function adminConfirmReset() {
 
 function adminImpersonate(username) {
   window._adminViewAs = username;
-  yearsInitialized = {};
+  yearsInitialized = false;
+  limitsInitialized = {};
   document.getElementById('admin-viewing-as-name').textContent = username;
   document.getElementById('admin-impersonation-bar').classList.remove('hidden');
   // Switch to Dashboard tab to trigger a fresh load with the new apiFetch routing
@@ -1561,7 +1596,8 @@ function adminImpersonate(username) {
 
 function adminStopImpersonating() {
   window._adminViewAs = null;
-  yearsInitialized = {};
+  yearsInitialized = false;
+  limitsInitialized = {};
   document.getElementById('admin-impersonation-bar').classList.add('hidden');
   const dashBtn = document.querySelector('[data-tab="dashboard"]');
   if (dashBtn) dashBtn.click();

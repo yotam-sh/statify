@@ -27,7 +27,7 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
 ### UX
 
 - **Hours/Minutes toggle** - switch display units globally from the user menu
-- **Year filter buttons** - multi-select year filtering on all tabs with "All Time" default
+- **Shared year filter** - single persistent filter bar above all data tabs; selecting years on any tab applies to all; switching tabs after a filter change is instant (other tabs preload silently in the background)
 - **Upload via UI** - drag & drop or file picker; re-upload anytime to update data
 - **Friendly upload errors** - validates zip structure, file naming, JSON schema, and Spotify column presence before accepting data
 - **User menu** - username + gear icon opens dropdown with unit toggle, upload, and logout
@@ -150,3 +150,13 @@ statify/
 |---|---|
 | Extended streaming history | Every play with timestamps, durations, skip/shuffle flags, platform, country |
 | Spotify Web API | Album art, artist images, artist genres, discographies |
+
+## Credits
+
+- Vibe coding, idea, fighting with Claude by [yotam-sh]
+- Code by [Anthropic's Claude](https://claude.ai) (Claude Code)
+- Logo by [OpenAI's ChatGPT](https://chatgpt.com)
+
+## License
+
+[MIT](LICENSE)
