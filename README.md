@@ -32,6 +32,7 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
 - **Friendly upload errors** - validates zip structure, file naming, JSON schema, and Spotify column presence before accepting data
 - **User menu** - username + gear icon opens dropdown with unit toggle, upload, and logout
 - **Mobile-responsive** - charts adapt to portrait/landscape viewports; tab bar scrolls on small screens
+- **Login page mosaic** - animated 3-column scrolling mosaic of background images on the login screen; drop images into `asset/login_backgrounds/` to include them automatically
 
 ### Image System
 
@@ -58,7 +59,7 @@ npm run build
 cp .env.example .env
 ```
 
-Fill in your Spotify API credentials from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), and set strong values for `JWT_SECRET` and `ADMIN_SECRET`. Set `ADMIN_USERNAME` to the username that should have admin access (leave blank to disable the admin panel).
+Fill in your Spotify API credentials from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), and set strong values for `JWT_SECRET` and `ADMIN_SECRET`. Set `ADMIN_USERNAME` to the username(s) that should have admin access — comma-separated for multiple admins (e.g. `alice,bob`). Leave blank to disable the admin panel.
 
 ### 4. Start the server
 
@@ -112,7 +113,8 @@ statify/
 │   └── styles.css          # Tailwind directives + custom CSS
 ├── asset/
 │   ├── logo.svg            # App icon (favicon)
-│   └── logo_with_name.svg  # Full logo used in navbar, login, and splash
+│   ├── logo_with_name.svg  # Full logo used in navbar, login, and splash
+│   └── login_backgrounds/  # Images for the login page mosaic (auto-discovered)
 ├── tests/
 │   └── responsive.spec.js  # Playwright responsive layout tests
 ├── data/

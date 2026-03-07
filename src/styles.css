@@ -55,6 +55,14 @@ body { background: var(--bg-dark); color: var(--text-primary); font-family: 'Seg
 .tab-scroll::-webkit-scrollbar { display: none; }
 /* Splash & upload modal */
 .splash-screen { position: fixed; inset: 0; z-index: 200; background: var(--bg-dark); display: flex; align-items: center; justify-content: center; }
+#login-bg { position: absolute; inset: 0; overflow: hidden; z-index: 0; display: flex; gap: 6px; align-items: flex-start; }
+.login-bg-col { flex: 1; display: flex; flex-direction: column; gap: 6px; will-change: transform; animation: login-scroll linear infinite; }
+.login-bg-col:nth-child(1) { animation-duration: 50s; }
+.login-bg-col:nth-child(2) { animation-duration: 70s; }
+.login-bg-col:nth-child(3) { animation-duration: 40s; }
+.login-bg-col img { width: 100%; display: block; border-radius: 6px; }
+@keyframes login-scroll { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+.login-bg-gradient { position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(0,0,0,0.80) 0%, rgba(0,0,0,0.25) 100%); z-index: 1; }
 .upload-drop-zone { border: 2px dashed #444; border-radius: 12px; padding: 2.5rem 2rem; text-align: center; cursor: pointer; transition: all 0.2s; }
 .upload-drop-zone:hover, .upload-drop-zone.drag-over { border-color: var(--spotify-green); background: rgba(29,185,84,0.05); }
 .upload-modal-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; }

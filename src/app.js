@@ -2,6 +2,34 @@ import Chart from 'chart.js/auto';
 import { TreemapController, TreemapElement } from 'chartjs-chart-treemap';
 Chart.register(TreemapController, TreemapElement);
 
+// ── Login background mosaic ───────────────────────────────────────────
+let _loginMosaicBuilt = false;
+async function buildLoginMosaic() {
+  if (_loginMosaicBuilt) return;
+  _loginMosaicBuilt = true;
+  const bg = document.getElementById('login-bg');
+  const gradient = bg.querySelector('.login-bg-gradient');
+  let images = [];
+  try {
+    const res = await fetch('/api/login-backgrounds');
+    if (res.ok) images = await res.json();
+  } catch (_) {}
+  if (images.length === 0) return;
+  const cols = [0, 1, 2].map(() => [...images].sort(() => Math.random() - 0.5));
+  cols.forEach(order => {
+    const col = document.createElement('div');
+    col.className = 'login-bg-col';
+    [...order, ...order].forEach(src => {
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = '';
+      img.loading = 'eager';
+      col.appendChild(img);
+    });
+    bg.insertBefore(col, gradient);
+  });
+}
+
 // ── Globals ──────────────────────────────────────────────────────────
 Chart.defaults.color = '#b3b3b3';
 Chart.defaults.borderColor = '#2a2a2a';
@@ -1317,6 +1345,7 @@ function showLogin() {
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('splash-screen').style.display = 'none';
   document.getElementById('nav-user-area').style.display = 'none';
+  buildLoginMosaic();
 }
 function hideLogin() {
   document.getElementById('login-screen').style.display = 'none';

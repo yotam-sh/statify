@@ -53,7 +53,8 @@ JWT_SECRET    = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_DAYS = 7
 ADMIN_SECRET  = os.getenv("ADMIN_SECRET", "")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")  # comma-separated for multiple admins
+_ADMIN_USERNAMES: set[str] = {u.strip() for u in ADMIN_USERNAME.split(",") if u.strip()}
 _SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true"
 _SPOTIFY_ID_RE = re.compile(r'^[0-9A-Za-z]{22}$')
 
@@ -244,7 +245,7 @@ def _db_create_user(username: str, password: str) -> dict:
 def _create_token(user_id: str, username: str) -> str:
     exp = datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRE_DAYS)
     payload: dict = {"sub": user_id, "username": username, "exp": exp}
-    if ADMIN_USERNAME and username == ADMIN_USERNAME:
+    if username in _ADMIN_USERNAMES:
         payload["is_admin"] = True
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -793,6 +794,10 @@ async def lifespan(application: FastAPI):
     # Auto-build frontend if dist/ is missing
     if not os.path.isfile(_DIST_INDEX):
         _build_frontend()
+    # Mount raw asset directory (logos, login backgrounds, etc.)
+    _asset_dir = os.path.join(_BASE, "asset")
+    if os.path.isdir(_asset_dir):
+        application.mount("/asset", StaticFiles(directory=_asset_dir), name="asset")
     # Mount compiled assets (may have just been built above)
     if os.path.isdir(_DIST_ASSETS):
         application.mount("/assets", StaticFiles(directory=_DIST_ASSETS), name="assets")
@@ -827,6 +832,16 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/login-backgrounds")
+async def login_backgrounds():
+    bg_dir = os.path.join(_BASE, "asset", "login_backgrounds")
+    if not os.path.isdir(bg_dir):
+        return []
+    exts = {".png", ".jpg", ".jpeg", ".webp", ".avif"}
+    files = sorted(f for f in os.listdir(bg_dir) if os.path.splitext(f)[1].lower() in exts)
+    return [f"/asset/login_backgrounds/{f}" for f in files]
+
+
 @app.post("/api/auth/login")
 @_limiter.limit("10/minute")
 async def login(request: Request):
@@ -842,7 +857,7 @@ async def login(request: Request):
     response = JSONResponse({
         "ok": True,
         "username": user["username"],
-        "is_admin": bool(ADMIN_USERNAME and user["username"] == ADMIN_USERNAME),
+        "is_admin": user["username"] in _ADMIN_USERNAMES,
     })
     response.set_cookie(
         "auth_token", token,
