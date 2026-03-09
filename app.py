@@ -14,6 +14,8 @@ import glob as globmod
 from itertools import combinations
 import io
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import shutil
@@ -33,7 +35,7 @@ import pandas as pd
 from cachetools import TTLCache
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -42,6 +44,26 @@ from jose import JWTError, jwt
 import bcrypt as _bcrypt_lib
 
 from spotify_client import get_client_credentials_client
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+os.makedirs(os.path.join(os.path.dirname(__file__), "logs"), exist_ok=True)
+_log_handler = RotatingFileHandler(
+    os.path.join(os.path.dirname(__file__), "logs", "app.log"),
+    maxBytes=5_000_000,
+    backupCount=5,
+)
+_log_handler.setFormatter(
+    logging.Formatter(
+        "%(asctime)s %(levelname)s [%(tag)s] %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+)
+logger = logging.getLogger("statify")
+logger.setLevel(logging.INFO)
+logger.addHandler(_log_handler)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -976,6 +998,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    # Skip noisy paths: client log endpoint itself and static assets
+    path = request.url.path
+    if path == "/api/log/client" or path.startswith("/assets/") or path in ("/favicon.ico", "/logo.svg"):
+        return await call_next(request)
+    t0 = time.monotonic()
+    response = await call_next(request)
+    ms = int((time.monotonic() - t0) * 1000)
+    level = logging.ERROR if response.status_code >= 500 else logging.WARNING if response.status_code >= 400 else logging.INFO
+    logger.log(level, "%s %s %d %dms", request.method, path, response.status_code, ms, extra={"tag": "REQUEST"})
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Routes — static & auth
 # ---------------------------------------------------------------------------
@@ -1420,6 +1456,50 @@ async def admin_refresh_empty(
     return {"attempted": before, "still_empty": still_empty, "refreshed": before - still_empty}
 
 
+@app.get("/api/admin/logs/download")
+async def download_logs(_: dict = Depends(require_admin)):
+    """Zip all log files and return as a browser download."""
+    log_dir = os.path.join(_BASE, "logs")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(globmod.glob(os.path.join(log_dir, "app.log*"))):
+            zf.write(f, os.path.basename(f))
+    buf.seek(0)
+    date_str = datetime.utcnow().strftime("%Y%m%d")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=statify_logs_{date_str}.zip"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — client logging (anonymous, no user identity)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/log/client")
+@_limiter.limit("30/minute")
+async def log_client_event(request: Request, body: dict):
+    event_type = str(body.get("type", "unknown"))[:32]
+    detail = str(body.get("detail", ""))[:500]
+    logger.info("%s %s", event_type, detail, extra={"tag": "CLIENT"})
+    return {"ok": True}
+
+
+@app.post("/api/feedback")
+@_limiter.limit("5/minute")
+async def submit_feedback(request: Request, body: dict):
+    try:
+        rating = int(body.get("rating", 0))
+    except (TypeError, ValueError):
+        rating = 0
+    if rating < 1 or rating > 5:
+        raise HTTPException(status_code=422, detail="Rating must be 1–5")
+    message = str(body.get("message", "")).strip()[:500]
+    logger.info("rating=%d message=%s", rating, message, extra={"tag": "FEEDBACK"})
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # Routes — current user data
 # ---------------------------------------------------------------------------
@@ -1457,9 +1537,11 @@ async def upload_data(
                         shutil.copyfileobj(src, dst)
                     extracted.append(basename)
     except zipfile.BadZipFile:
+        logger.warning("invalid zip file uploaded", extra={"tag": "UPLOAD"})
         raise HTTPException(status_code=422, detail="Invalid zip file")
 
     if not extracted:
+        logger.warning("upload rejected: no Streaming_History_Audio_*.json files found", extra={"tag": "UPLOAD"})
         raise HTTPException(
             status_code=422,
             detail="No Streaming_History_Audio_*.json files found in zip",
@@ -1471,11 +1553,13 @@ async def upload_data(
     except ValueError as e:
         for f in globmod.glob(os.path.join(user_dir, "Streaming_History_Audio_*.json")):
             os.remove(f)
+        logger.warning("upload rejected: %s", str(e), extra={"tag": "UPLOAD"})
         raise HTTPException(status_code=422, detail=str(e))
 
     if data is None:
         raise HTTPException(status_code=500, detail="Failed to load data after extraction")
 
+    logger.info("upload ok files=%d", len(extracted), extra={"tag": "UPLOAD"})
     return {"ok": True, "files_loaded": len(extracted)}
 
 
@@ -2054,6 +2138,9 @@ def _build_top_tracks(
         row["genre"] = genres.get(row["artist"], "")
         uri = uri_lookup.get((row["track"], row["artist"]))
         track_id = uri.split(":")[-1] if uri and uri.startswith("spotify:track:") else None
+        # Validate that the ID is purely alphanumeric before embedding in a URL
+        if track_id and not re.fullmatch(r"[A-Za-z0-9]+", track_id):
+            track_id = None
         row["spotify_url"] = f"https://open.spotify.com/track/{track_id}" if track_id else None
 
     return {

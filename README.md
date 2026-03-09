@@ -27,6 +27,7 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
   - Manage users in a sortable, filterable table with data size (MB), last data date, and file count columns; actions include toggle public/private, view data, reset password, clear streaming data (keeps account), and delete account
   - Browse and edit the image cache with the "Fix an Image" search panel side-by-side with the table; search Spotify by name or Spotify ID, pick a replacement image, and save it; bulk-refresh all empty entries; rate-limit aware ("API unavailable — try again in ~Xm" when blocked)
   - Impersonate any user to browse their data — year filter bar and all tabs reset instantly and preload in the background on every user switch
+  - Download server logs as a zip file directly from the admin overview panel
 
 ### UX
 
@@ -37,7 +38,8 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
 - **Spotify deep-links** - artist, album, and track names in the three top-N tables link directly to their Spotify pages; track links work immediately (URI stored in streaming history); artist and album links are populated automatically on startup and every 6 hours via a background Spotify ID backfill (rate-limit aware)
 - **Upload via UI** - drag & drop or file picker; re-upload anytime to update data
 - **Friendly upload errors** - validates zip structure, file naming, JSON schema, and Spotify column presence before accepting data
-- **User menu** - username + gear icon opens dropdown with unit toggle, visibility toggle, empty years toggle, upload, and logout
+- **Feedback** - star-rating modal (1–5 stars, contextual prompt, optional message) accessible from the user menu; submissions logged anonymously server-side
+- **User menu** - username + gear icon opens dropdown with unit toggle, visibility toggle, empty years toggle, upload, feedback, and logout
 - **Sticky table headers** - column headers stay visible while scrolling through long tables; columns are fixed-width with wrapping cell text
 - **Mobile-responsive** - charts adapt to portrait/landscape viewports; tab bar scrolls on small screens
 - **Login page mosaic** - animated 3-column scrolling mosaic of background images on the login screen; drop images into `asset/login_backgrounds/` to include them automatically
@@ -45,6 +47,10 @@ A multi-user Spotify listening analytics dashboard built with FastAPI and a Vite
 ### Image System
 
 Artist photos and album covers are fetched from the Spotify Web API with a 6-layer fallback system, cached in SQLite so each lookup happens at most once. Images load asynchronously without blocking the UI. Spotify IDs for deep-linking are stored alongside image URLs and backfilled automatically on server startup (and every 6 hours thereafter) for any entries added before the feature was enabled.
+
+### Logging
+
+All server activity is written to a rotating log file (`logs/app.log`, 5 MB × 5 backups). Logged events include every API request (method, path, status, response time), upload outcomes, anonymous user feedback, and client-side JavaScript errors and navigation events. No user identities are stored in logs. Admins can download all log files as a zip from the admin overview panel.
 
 ## Setup
 

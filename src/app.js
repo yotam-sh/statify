@@ -100,6 +100,109 @@ let useMinutes = false;
 let _showGapYears = localStorage.getItem('showGapYears') !== 'false'; // default: show gap years
 let currentArtist = null;
 
+// ── Anonymous activity logging ───────────────────────────────────────
+function _logClient(type, detail) {
+  fetch('/api/log/client', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, detail: String(detail).slice(0, 500) }),
+  }).catch(() => {});
+}
+
+window.onerror = (msg, src, line, col) => {
+  _logClient('js_error', `${msg} @ ${src}:${line}:${col}`);
+};
+window.addEventListener('unhandledrejection', e => {
+  _logClient('js_unhandled_rejection', e.reason?.stack || String(e.reason));
+});
+
+// ── Feedback modal ───────────────────────────────────────────────────
+const _fbLabels   = ['', 'Needs work', 'Could be better', "It's okay", 'Pretty good!', 'Love it! 🎉'];
+const _fbPrompts  = ['', "What's not working for you?", "What's falling short?",
+  'What would make it better?', 'What could make it even better?', 'What do you love most about it?'];
+let _fbRating = 0;
+
+function openFeedbackModal() {
+  _fbRating = 0;
+  _fbUpdateStars(0);
+  document.getElementById('fb-label').textContent = "How's Statify treating you?";
+  const ta = document.getElementById('fb-message');
+  ta.value = '';
+  ta.classList.add('hidden');
+  document.getElementById('fb-char').classList.add('hidden');
+  const btn = document.getElementById('fb-submit');
+  btn.disabled = true;
+  btn.style.opacity = '0.3';
+  btn.style.cursor = 'not-allowed';
+  document.getElementById('fb-success').classList.add('hidden');
+  document.getElementById('feedback-modal').style.display = 'flex';
+}
+
+function closeFeedbackModal() {
+  document.getElementById('feedback-modal').style.display = 'none';
+}
+
+function _fbUpdateStars(n) {
+  document.getElementById('fb-stars').querySelectorAll('span').forEach(s => {
+    const filled = +s.dataset.star <= n;
+    s.textContent = filled ? '★' : '☆';
+    s.style.color  = filled ? '#facc15' : '#4b5563';
+  });
+}
+
+(function _fbBindStars() {
+  const stars = document.getElementById('fb-stars');
+  stars.addEventListener('mouseover', e => {
+    if (e.target.dataset.star) _fbUpdateStars(+e.target.dataset.star);
+  });
+  stars.addEventListener('mouseleave', () => _fbUpdateStars(_fbRating));
+  stars.addEventListener('click', e => {
+    if (!e.target.dataset.star) return;
+    _fbRating = +e.target.dataset.star;
+    _fbUpdateStars(_fbRating);
+    document.getElementById('fb-label').textContent = _fbLabels[_fbRating];
+    const ta = document.getElementById('fb-message');
+    ta.placeholder = _fbPrompts[_fbRating];
+    ta.classList.remove('hidden');
+    document.getElementById('fb-char').classList.remove('hidden');
+    const btn = document.getElementById('fb-submit');
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.cursor  = 'pointer';
+  });
+  document.getElementById('fb-message').addEventListener('input', () => {
+    document.getElementById('fb-char').textContent =
+      `${document.getElementById('fb-message').value.length} / 500`;
+  });
+})();
+
+async function submitFeedback() {
+  if (!_fbRating) return;
+  const message = document.getElementById('fb-message').value.trim();
+  const btn = document.getElementById('fb-submit');
+  btn.disabled = true;
+  btn.style.opacity = '0.3';
+  await fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rating: _fbRating, message }),
+  }).catch(() => {});
+  document.getElementById('fb-success').classList.remove('hidden');
+  setTimeout(closeFeedbackModal, 1500);
+}
+
+window.openFeedbackModal  = openFeedbackModal;
+window.closeFeedbackModal = closeFeedbackModal;
+window.submitFeedback     = submitFeedback;
+
+// Validate a Spotify URL before embedding in an href attribute.
+// Only allows known-safe https://open.spotify.com/ URLs with no special characters.
+function _safeSpotifyUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  if (!/^https:\/\/open\.spotify\.com\/[a-z]+\/[A-Za-z0-9]+$/.test(url)) return null;
+  return url;
+}
+
 function _fillGapYears(yearRange, sparseLabels, sparseValues) {
   if (!_showGapYears || !yearRange || yearRange.length === sparseLabels.length)
     return { labels: sparseLabels, values: sparseValues };
@@ -144,7 +247,7 @@ function durVal(hours) { return useMinutes ? Math.round(hours * 60) : hours; }
 function setUnit(minutes) {
   if (useMinutes === minutes) return;
   useMinutes = minutes;
-  document.querySelectorAll('nav .unit-opt').forEach(b => b.classList.toggle('active', b.dataset.unit === (minutes ? 'm' : 'h')));
+  document.querySelectorAll('nav .unit-opt[data-unit]').forEach(b => b.classList.toggle('active', b.dataset.unit === (minutes ? 'm' : 'h')));
   document.querySelectorAll('.dur-header').forEach(el => el.textContent = durLabel());
   const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
   const loaders = { dashboard: loadDashboard, 'top-artists': loadTopArtists, 'top-tracks': loadTopTracks, 'top-albums': loadTopAlbums, timeline: loadTimeline, habits: loadHabits };
@@ -576,7 +679,7 @@ let _yearRange = [];
 
 // ── Dashboard ────────────────────────────────────────────────────────
 async function loadDashboard(silent) {
-  if (silent !== true) showLoading('dashboard');
+  if (silent !== true) { showLoading('dashboard'); _logClient('nav', 'tab=dashboard'); }
 
   const params = buildFilterParams();
   const data = await apiFetch('/dashboard?' + params).then(r => r.json());
@@ -653,6 +756,7 @@ async function loadDashboard(silent) {
 
 // ── Top Artists ──────────────────────────────────────────────────────
 async function loadTopArtists(silent) {
+  if (silent !== true) _logClient('nav', 'tab=top-artists');
   const limit = document.getElementById('artists-limit').value;
   const params = `limit=${limit}` + buildFilterParams();
 
@@ -676,8 +780,9 @@ async function loadTopArtists(silent) {
   data.table.forEach(r => { if (r.image) artistImgLookup[r.artist] = r.image; });
 
   document.getElementById('artists-table').innerHTML = data.table.map((r, i) => {
-    const nameHtml = r.spotify_url
-      ? `<a href="${r.spotify_url}" target="_blank" rel="noopener" class="spotify-link">${esc(r.artist)}</a>`
+    const safeUrl = _safeSpotifyUrl(r.spotify_url);
+    const nameHtml = safeUrl
+      ? `<a href="${safeUrl}" target="_blank" rel="noopener" class="spotify-link">${esc(r.artist)}</a>`
       : esc(r.artist);
     return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, true, r.artist)}</td><td class="py-2 px-3 font-medium">${nameHtml}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
@@ -703,6 +808,7 @@ async function loadTopArtists(silent) {
 
 // ── Top Tracks ───────────────────────────────────────────────────────
 async function loadTopTracks(silent) {
+  if (silent !== true) _logClient('nav', 'tab=top-tracks');
   const limit = document.getElementById('tracks-limit').value;
   const params = `limit=${limit}` + buildFilterParams();
 
@@ -727,8 +833,9 @@ async function loadTopTracks(silent) {
 
   document.getElementById('tracks-table').innerHTML = data.table.map((r, i) => {
     const albumKey = `${r.album}||${r.artist}`;
-    const nameHtml = r.spotify_url
-      ? `<a href="${r.spotify_url}" target="_blank" rel="noopener" class="spotify-link">${esc(r.track)}</a>`
+    const safeUrl = _safeSpotifyUrl(r.spotify_url);
+    const nameHtml = safeUrl
+      ? `<a href="${safeUrl}" target="_blank" rel="noopener" class="spotify-link">${esc(r.track)}</a>`
       : esc(r.track);
     return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${nameHtml}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
@@ -778,6 +885,7 @@ async function loadTopTracks(silent) {
 
 // ── Top Albums ──────────────────────────────────────────────────────
 async function loadTopAlbums(silent) {
+  if (silent !== true) _logClient('nav', 'tab=top-albums');
   const limit = document.getElementById('albums-limit').value;
   const params = `limit=${limit}` + buildFilterParams();
 
@@ -802,8 +910,9 @@ async function loadTopAlbums(silent) {
 
   document.getElementById('albums-table').innerHTML = data.table.map((r, i) => {
     const albumKey = `${r.album}||${r.artist}`;
-    const nameHtml = r.spotify_url
-      ? `<a href="${r.spotify_url}" target="_blank" rel="noopener" class="spotify-link">${esc(r.album)}</a>`
+    const safeUrl = _safeSpotifyUrl(r.spotify_url);
+    const nameHtml = safeUrl
+      ? `<a href="${safeUrl}" target="_blank" rel="noopener" class="spotify-link">${esc(r.album)}</a>`
       : esc(r.album);
     return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${nameHtml}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.tracks}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
@@ -850,7 +959,7 @@ async function loadTopAlbums(silent) {
 
 // ── Timeline ─────────────────────────────────────────────────────────
 async function loadTimeline(silent) {
-  if (silent !== true) showLoading('timeline');
+  if (silent !== true) { showLoading('timeline'); _logClient('nav', 'tab=timeline'); }
 
   const params = buildFilterParams();
   const data = await apiFetch('/timeline?' + params).then(r => r.json());
@@ -1228,7 +1337,7 @@ function setDailyMode(mode) {
 }
 
 async function loadHabits(silent) {
-  if (silent !== true) showLoading('habits');
+  if (silent !== true) { showLoading('habits'); _logClient('nav', 'tab=habits'); }
 
   const params = buildFilterParams();
   const data = await apiFetch('/habits?' + params).then(r => r.json());
@@ -1513,12 +1622,16 @@ async function doUpload(file, statusEl, onSuccess) {
     const res = await fetch('/api/upload', { method: 'POST', body: form });
     const data = await res.json();
     if (res.ok) {
+      _logClient('upload_ok', `files=${data.files_loaded}`);
       statusEl.innerHTML = `<span class="text-green-400">✓ Loaded ${data.files_loaded} file(s). Loading dashboard…</span>`;
       setTimeout(() => onSuccess(), 800);
     } else {
-      statusEl.innerHTML = `<span class="text-red-400">Error: ${esc(data.detail || data.error || 'Upload failed')}</span>`;
+      const errMsg = data.detail || data.error || 'Upload failed';
+      _logClient('upload_error', errMsg);
+      statusEl.innerHTML = `<span class="text-red-400">Error: ${esc(errMsg)}</span>`;
     }
   } catch {
+    _logClient('upload_error', 'network error');
     statusEl.innerHTML = '<span class="text-red-400">Network error. Is the server running?</span>';
   }
 }
@@ -1666,6 +1779,7 @@ function removeCompareUser(idx) {
 }
 
 async function loadCompare() {
+  _logClient('nav', 'tab=compare');
   const errEl = document.getElementById('compare-error');
   errEl.textContent = '';
 
