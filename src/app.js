@@ -97,7 +97,44 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // ── Unit toggle ─────────────────────────────────────────────────────
 let useMinutes = false;
+let _showGapYears = localStorage.getItem('showGapYears') !== 'false'; // default: show gap years
 let currentArtist = null;
+
+function _fillGapYears(yearRange, sparseLabels, sparseValues) {
+  if (!_showGapYears || !yearRange || yearRange.length === sparseLabels.length)
+    return { labels: sparseLabels, values: sparseValues };
+  const lookup = {};
+  sparseLabels.forEach((l, i) => { lookup[l] = sparseValues[i]; });
+  return { labels: yearRange, values: yearRange.map(y => lookup[y] ?? 0) };
+}
+
+function _fillGapMonths(sparseLabels, sparseValues) {
+  if (!_showGapYears || sparseLabels.length < 2)
+    return { labels: sparseLabels, values: sparseValues };
+  const lookup = {};
+  sparseLabels.forEach((l, i) => { lookup[l] = sparseValues[i]; });
+  const [fy, fm] = sparseLabels[0].split('-').map(Number);
+  const [ly, lm] = sparseLabels[sparseLabels.length - 1].split('-').map(Number);
+  const allMonths = [];
+  let y = fy, m = fm;
+  while (y < ly || (y === ly && m <= lm)) {
+    allMonths.push(`${y}-${String(m).padStart(2, '0')}`);
+    if (++m > 12) { m = 1; y++; }
+  }
+  return { labels: allMonths, values: allMonths.map(mo => lookup[mo] ?? 0) };
+}
+
+function setShowGapYears(show) {
+  if (_showGapYears === show) return;
+  _showGapYears = show;
+  localStorage.setItem('showGapYears', show ? 'true' : 'false');
+  document.querySelectorAll('.gap-year-opt').forEach(b =>
+    b.classList.toggle('active', b.dataset.gap === (show ? 'show' : 'hide')));
+  const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+  const loaders = { dashboard: loadDashboard, timeline: loadTimeline };
+  if (loaders[activeTab]) loaders[activeTab]();
+}
+window.setShowGapYears = setShowGapYears;
 function fmtDur(hours) {
   if (useMinutes) return Math.round(hours * 60).toLocaleString();
   return hours.toLocaleString();
@@ -493,7 +530,10 @@ function reloadActiveTab() {
 function setupYearButtons(containerId, years, onSelect) {
   const container = document.getElementById(containerId);
   let html = '<button class="year-btn active" data-year="all">All Time</button>';
-  years.forEach(y => { html += `<button class="year-btn" data-year="${y}">${y}</button>`; });
+  years.forEach(y => {
+    const isGap = _yearsWithData.size > 0 && !_yearsWithData.has(y);
+    html += `<button class="year-btn" data-year="${y}"${isGap ? ' disabled title="No data for this year"' : ''}>${y}</button>`;
+  });
   html += '<button class="year-btn-clear" data-action="clear" style="display:none">Clear</button>';
   container.innerHTML = html;
 
@@ -531,6 +571,8 @@ function setupYearButtons(containerId, years, onSelect) {
 let yearsInitialized = false;
 let limitsInitialized = {};
 const _preloadedTabs = new Set();
+let _yearsWithData = new Set();
+let _yearRange = [];
 
 // ── Dashboard ────────────────────────────────────────────────────────
 async function loadDashboard(silent) {
@@ -540,7 +582,9 @@ async function loadDashboard(silent) {
   const data = await apiFetch('/dashboard?' + params).then(r => r.json());
 
   if (!yearsInitialized && data.years) {
-    setupYearButtons('global-year-btns', data.years, reloadActiveTab);
+    _yearsWithData = new Set(data.years);
+    _yearRange = data.year_range || data.years;
+    setupYearButtons('global-year-btns', _yearRange, reloadActiveTab);
     yearsInitialized = true;
   }
 
@@ -552,11 +596,12 @@ async function loadDashboard(silent) {
     statCard(s.unique_tracks.toLocaleString(), 'Unique Tracks') +
     statCard(s.first_listen + ' &rarr; ' + s.last_listen, 'Date Range');
 
-  // Monthly hours line chart (issue #3: hover + axis labels)
+  // Monthly hours line chart
+  const monthlyFilled = _fillGapMonths(data.monthly_hours.labels, data.monthly_hours.values);
   makeChart('chart-monthly-hours', {
     type: 'line',
-    data: { labels: data.monthly_hours.labels, datasets: [{
-      data: data.monthly_hours.values.map(durVal), fill: true,
+    data: { labels: monthlyFilled.labels, datasets: [{
+      data: monthlyFilled.values.map(durVal), fill: true,
       backgroundColor: GREEN_15, borderColor: GREEN, borderWidth: 2, tension: 0.3, pointRadius: 0, pointHitRadius: 10
     }]},
     options: { responsive: true,
@@ -617,7 +662,9 @@ async function loadTopArtists(silent) {
 
   if (!yearsInitialized) {
     const dashData = await apiFetch('/dashboard').then(r => r.json());
-    setupYearButtons('global-year-btns', dashData.years, reloadActiveTab);
+    _yearsWithData = new Set(dashData.years);
+    _yearRange = dashData.year_range || dashData.years;
+    setupYearButtons('global-year-btns', _yearRange, reloadActiveTab);
     yearsInitialized = true;
   }
   if (!limitsInitialized.topArtists) {
@@ -628,9 +675,12 @@ async function loadTopArtists(silent) {
   const artistImgLookup = {};
   data.table.forEach(r => { if (r.image) artistImgLookup[r.artist] = r.image; });
 
-  document.getElementById('artists-table').innerHTML = data.table.map((r, i) =>
-    `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, true, r.artist)}</td><td class="py-2 px-3 font-medium">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`
-  ).join('');
+  document.getElementById('artists-table').innerHTML = data.table.map((r, i) => {
+    const nameHtml = r.spotify_url
+      ? `<a href="${r.spotify_url}" target="_blank" rel="noopener" class="spotify-link">${esc(r.artist)}</a>`
+      : esc(r.artist);
+    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, true, r.artist)}</td><td class="py-2 px-3 font-medium">${nameHtml}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
+  }).join('');
   showContent('top-artists');
   _preloadedTabs.add('top-artists');
   requestAnimationFrame(() => {
@@ -662,7 +712,9 @@ async function loadTopTracks(silent) {
 
   if (!yearsInitialized) {
     const dashData = await apiFetch('/dashboard').then(r => r.json());
-    setupYearButtons('global-year-btns', dashData.years, reloadActiveTab);
+    _yearsWithData = new Set(dashData.years);
+    _yearRange = dashData.year_range || dashData.years;
+    setupYearButtons('global-year-btns', _yearRange, reloadActiveTab);
     yearsInitialized = true;
   }
   if (!limitsInitialized.topTracks) {
@@ -675,7 +727,10 @@ async function loadTopTracks(silent) {
 
   document.getElementById('tracks-table').innerHTML = data.table.map((r, i) => {
     const albumKey = `${r.album}||${r.artist}`;
-    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${esc(r.track)}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
+    const nameHtml = r.spotify_url
+      ? `<a href="${r.spotify_url}" target="_blank" rel="noopener" class="spotify-link">${esc(r.track)}</a>`
+      : esc(r.track);
+    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${nameHtml}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-gray-400">${esc(r.album)}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
   showContent('top-tracks');
   _preloadedTabs.add('top-tracks');
@@ -732,7 +787,9 @@ async function loadTopAlbums(silent) {
 
   if (!yearsInitialized) {
     const dashData = await apiFetch('/dashboard').then(r => r.json());
-    setupYearButtons('global-year-btns', dashData.years, reloadActiveTab);
+    _yearsWithData = new Set(dashData.years);
+    _yearRange = dashData.year_range || dashData.years;
+    setupYearButtons('global-year-btns', _yearRange, reloadActiveTab);
     yearsInitialized = true;
   }
   if (!limitsInitialized.topAlbums) {
@@ -745,7 +802,10 @@ async function loadTopAlbums(silent) {
 
   document.getElementById('albums-table').innerHTML = data.table.map((r, i) => {
     const albumKey = `${r.album}||${r.artist}`;
-    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${esc(r.album)}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.tracks}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
+    const nameHtml = r.spotify_url
+      ? `<a href="${r.spotify_url}" target="_blank" rel="noopener" class="spotify-link">${esc(r.album)}</a>`
+      : esc(r.album);
+    return `<tr class="table-row border-b border-white/5"><td class="py-2 px-3 text-gray-400">${i+1}</td><td class="py-2 px-3">${imgTag(r.image, 32, false, albumKey)}</td><td class="py-2 px-3 font-medium">${nameHtml}</td><td class="py-2 px-3 text-gray-300">${esc(r.artist)}</td><td class="py-2 px-3 text-right">${r.tracks}</td><td class="py-2 px-3 text-right">${r.plays.toLocaleString()}</td><td class="py-2 px-3 text-right">${fmtDur(r.hours)}</td></tr>`;
   }).join('');
   showContent('top-albums');
   _preloadedTabs.add('top-albums');
@@ -796,14 +856,17 @@ async function loadTimeline(silent) {
   const data = await apiFetch('/timeline?' + params).then(r => r.json());
 
   if (!yearsInitialized && data.years) {
-    setupYearButtons('global-year-btns', data.years, reloadActiveTab);
+    _yearsWithData = new Set(data.years);
+    _yearRange = data.year_range || data.years;
+    setupYearButtons('global-year-btns', _yearRange, reloadActiveTab);
     yearsInitialized = true;
   }
 
-  // Yearly bar chart (issue #8: axis labels)
+  // Yearly bar chart
+  const yearlyFilled = _fillGapYears(data.year_range, data.yearly.labels, data.yearly.values);
   makeChart('chart-yearly', {
     type: 'bar',
-    data: { labels: data.yearly.labels, datasets: [{ data: data.yearly.values.map(durVal), backgroundColor: GREEN, borderRadius: 4 }] },
+    data: { labels: yearlyFilled.labels, datasets: [{ data: yearlyFilled.values.map(durVal), backgroundColor: GREEN, borderRadius: 4 }] },
     options: { responsive: true, plugins: { legend: { display: false } },
       scales: {
         y: { grid: { color: '#222' }, beginAtZero: true, title: axisTitle(durLabel()) },
@@ -814,11 +877,13 @@ async function loadTimeline(silent) {
 
   // Heatmap
   const hm = data.heatmap;
-  const hmYears = Object.keys(hm).map(Number).sort();
+  const hmYears = (_showGapYears && data.year_range && data.year_range.length)
+    ? data.year_range
+    : Object.keys(hm).map(Number).sort();
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const monthsFull = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   let maxH = 0;
-  hmYears.forEach(y => Object.values(hm[y]).forEach(v => { if (v > maxH) maxH = v; }));
+  hmYears.forEach(y => hm[y] && Object.values(hm[y]).forEach(v => { if (v > maxH) maxH = v; }));
 
   let html = '<div class="grid" style="grid-template-columns: 50px repeat(12, 1fr); gap: 3px; max-width: 900px; margin: 0 auto;">';
   html += '<div></div>' + months.map(m => `<div class="text-xs text-gray-500 text-center">${m}</div>`).join('');
@@ -971,9 +1036,20 @@ async function loadTimeline(silent) {
   // Taste evolution – Bump Chart (rank 1-5 per year)
   const evo = data.evolution;
   const evoImages = evo.images || {};
-  const evoYears = evo.labels;
-  const evoDatasets = evo.datasets;
   const evoArtists = evo.artists;
+
+  // Expand to full year range (including gap years) if toggle is on
+  const sparseEvoYears = evo.labels;
+  const evoYears = (_showGapYears && data.year_range && data.year_range.length)
+    ? data.year_range : sparseEvoYears;
+  const sparseEvoIndex = {};
+  sparseEvoYears.forEach((y, i) => { sparseEvoIndex[y] = i; });
+  // Build dense datasets — gap years get 0 hours
+  const evoDatasets = {};
+  (evoArtists || []).forEach(a => {
+    const sparse = evo.datasets[a] || [];
+    evoDatasets[a] = evoYears.map(y => y in sparseEvoIndex ? (sparse[sparseEvoIndex[y]] || 0) : 0);
+  });
 
   // Compute ranks per year: for each year, sort artists by hours desc → rank 1-5
   const rankData = {}; // { artist: [rank_or_null_per_year] }
@@ -1159,7 +1235,9 @@ async function loadHabits(silent) {
   habitsData = data;
 
   if (!yearsInitialized && data.years) {
-    setupYearButtons('global-year-btns', data.years, reloadActiveTab);
+    _yearsWithData = new Set(data.years);
+    _yearRange = data.year_range || data.years;
+    setupYearButtons('global-year-btns', _yearRange, reloadActiveTab);
     yearsInitialized = true;
   }
 
@@ -1877,6 +1955,11 @@ function adminShowPanel(name) {
   if (name === 'image-cache') adminLoadImageCache(1);
 }
 
+function _fmtRetryAfter(secs) {
+  if (secs >= 3600) return `${Math.ceil(secs / 3600)}h`;
+  return `${Math.ceil(secs / 60)}m`;
+}
+
 async function loadAdminOverview() {
   const data = await fetch('/api/admin/overview').then(r => r.json());
   const el = document.getElementById('admin-overview-content');
@@ -1898,11 +1981,51 @@ async function loadAdminOverview() {
       extra: data.empty_album_images > 0 ? `onclick="adminShowEmptyImages('album')" style="cursor:pointer" title="Click to filter image cache"` : '',
     },
     { label: apiLabel, val: '', style: `color:${apiColor}`, extra: '' },
+    ...(data.api_available ? [{
+      label: data.api_requests_ok
+        ? '✓ API requests OK'
+        : data.api_retry_after
+          ? `✗ No API requests — ready in ~${_fmtRetryAfter(data.api_retry_after)}`
+          : '✗ API requests blocked',
+      val: '',
+      style: `color:${data.api_requests_ok ? '#1DB954' : '#ff6b6b'}`,
+      extra: '',
+    }] : []),
   ];
   el.innerHTML = cards.map(({ label, val, style, extra }) =>
     `<div class="stat-card" ${extra}><div class="value" style="${style}">${val !== '' ? Number(val).toLocaleString() : ''}</div><div class="label">${label}</div></div>`
   ).join('');
+
+  const backfillBar = document.getElementById('admin-backfill-bar');
+  if (backfillBar) {
+    backfillBar.classList.toggle('hidden', !data.api_available);
+    document.getElementById('backfill-result').textContent = '';
+  }
 }
+
+async function adminBackfillIds() {
+  const btn = document.getElementById('backfill-btn');
+  const result = document.getElementById('backfill-result');
+  btn.disabled = true;
+  result.textContent = 'Running…';
+  result.style.color = '#888';
+  try {
+    const res = await fetch('/api/admin/backfill-spotify-ids', { method: 'POST' }).then(r => r.json());
+    if (res.retry_after > 0) {
+      const mins = Math.ceil(res.retry_after / 60);
+      result.textContent = `Rate limited — retry in ~${mins} min (updated ${res.updated} before limit).`;
+      result.style.color = '#FFA726';
+    } else {
+      result.textContent = `Updated ${res.updated} entr${res.updated === 1 ? 'y' : 'ies'}.`;
+      result.style.color = '#1DB954';
+    }
+  } catch {
+    result.textContent = 'Error — check server logs.';
+    result.style.color = '#ff6b6b';
+  }
+  btn.disabled = false;
+}
+window.adminBackfillIds = adminBackfillIds;
 
 function adminShowEmptyImages(type) {
   _adminCacheEmptyOnly = true;
@@ -2020,13 +2143,9 @@ async function adminConfirmClearData() {
 
 function adminImpersonate(username) {
   window._adminViewAs = username;
-  yearsInitialized = false;
-  limitsInitialized = {};
   document.getElementById('admin-viewing-as-name').textContent = username;
   document.getElementById('admin-impersonation-bar').classList.remove('hidden');
-  // Switch to Dashboard tab to trigger a fresh load with the new apiFetch routing
-  const dashBtn = document.querySelector('[data-tab="dashboard"]');
-  if (dashBtn) dashBtn.click();
+  _switchToUser();
 }
 
 async function setPublicProfile(isPublic) {
@@ -2046,11 +2165,33 @@ function _updateProfileVisToggle() {
 
 function adminStopImpersonating() {
   window._adminViewAs = null;
+  document.getElementById('admin-impersonation-bar').classList.add('hidden');
+  _switchToUser();
+}
+
+function _switchToUser() {
+  // Reset all per-user state
   yearsInitialized = false;
   limitsInitialized = {};
-  document.getElementById('admin-impersonation-bar').classList.add('hidden');
-  const dashBtn = document.querySelector('[data-tab="dashboard"]');
-  if (dashBtn) dashBtn.click();
+  _preloadedTabs.clear();
+  _yearsWithData = new Set();
+  _yearRange = [];
+
+  // Immediately clear year buttons so stale buttons don't linger
+  const yearBtns = document.getElementById('global-year-btns');
+  if (yearBtns) yearBtns.innerHTML = '<button class="year-btn active" data-year="all">All Time</button>';
+
+  // Switch to dashboard tab visually (without triggering the click handler)
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === 'dashboard');
+    b.classList.toggle('text-gray-400', b.dataset.tab !== 'dashboard');
+  });
+  document.querySelectorAll('main > section').forEach(s => s.classList.add('hidden'));
+  document.getElementById('tab-dashboard').classList.remove('hidden');
+  document.getElementById('global-year-bar').classList.remove('hidden');
+
+  // Load dashboard (primary) + silently preload all other tabs in background
+  reloadActiveTab();
 }
 
 function adminSetCacheType(type) {
@@ -2131,8 +2272,14 @@ async function adminSearchImage() {
   const q = document.getElementById('admin-fix-query').value.trim();
   if (!q) return;
   const params = new URLSearchParams({q, type: _adminFixType});
-  const results = await fetch('/api/admin/image-cache/search?' + params).then(r => r.json());
+  const resp = await fetch('/api/admin/image-cache/search?' + params).then(r => r.json());
   const el = document.getElementById('admin-search-results');
+  if (resp.error === 'rate_limited') {
+    const mins = _fmtRetryAfter(resp.retry_after || 3600);
+    el.innerHTML = `<p class="text-orange-400 text-sm col-span-full">API unavailable — try again in ~${mins}.</p>`;
+    return;
+  }
+  const results = resp.results ?? resp;
   if (!results.length) { el.innerHTML = '<p class="text-gray-400 text-sm col-span-full">No results found.</p>'; return; }
   el.innerHTML = results.map(r => {
     const label = _adminFixType === 'artist' ? esc(r.name) : `${esc(r.name)}<br><span class="text-gray-400">${esc(r.artist||'')}</span>`;
@@ -2230,6 +2377,8 @@ async function initApp() {
   }
   _meIsPublic = me.is_public ?? true;
   _updateProfileVisToggle();
+  document.querySelectorAll('.gap-year-opt').forEach(b =>
+    b.classList.toggle('active', b.dataset.gap === (_showGapYears ? 'show' : 'hide')));
 
   const { has_data } = await fetch('/api/status').then(r => r.json());
   if (!has_data) showSplash(); else loadDashboard();

@@ -38,6 +38,9 @@ body { background: var(--bg-dark); color: var(--text-primary); font-family: 'Seg
 .year-btn { background: #282828; color: #b3b3b3; border: 1px solid #444; border-radius: 16px; padding: 0.45rem 0.875rem; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
 .year-btn:hover { border-color: var(--spotify-green); color: #fff; }
 .year-btn.active { background: var(--spotify-green); color: #000; border-color: var(--spotify-green); font-weight: 600; }
+.year-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.spotify-link { color: inherit; text-decoration: underline; text-decoration-color: #1DB95440; text-underline-offset: 2px; transition: color 0.15s, text-decoration-color 0.15s; }
+.spotify-link:hover { color: #1DB954; text-decoration-color: #1DB954; }
 .year-btn-clear { background: transparent; color: #888; border: 1px solid #555; border-radius: 16px; padding: 0.45rem 0.875rem; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
 .year-btn-clear:hover { color: #ff6b6b; border-color: #ff6b6b; }
 .suggestion-chip { background: #282828; color: #b3b3b3; border: 1px solid #444; border-radius: 20px; padding: 0.45rem 1rem 0.45rem 0.45rem; font-size: 0.85rem; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.5rem; }

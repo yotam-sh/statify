@@ -8,6 +8,7 @@ Supports multiple users with JWT authentication and per-user TTL cache.
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import glob as globmod
 from itertools import combinations
@@ -25,7 +26,7 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from threading import Lock
+from threading import Lock, Thread, Timer
 from typing import Optional
 
 import pandas as pd
@@ -131,6 +132,12 @@ def _load_dataframe(data_dir: str) -> pd.DataFrame | None:
         "master_metadata_album_artist_name": "artist",
         "master_metadata_album_album_name": "album",
     }, inplace=True)
+
+    # Preserve Spotify track URI for deep-linking (spotify:track:<id>)
+    if "spotify_track_uri" in df.columns:
+        df["track_uri"] = df["spotify_track_uri"]
+    else:
+        df["track_uri"] = None
 
     # Derived columns
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
@@ -292,15 +299,26 @@ def _init_image_db():
     conn.execute("""CREATE TABLE IF NOT EXISTS artist_images (
         artist_name TEXT PRIMARY KEY,
         image_url TEXT,
-        fetched_at TEXT
+        fetched_at TEXT,
+        spotify_id TEXT
     )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS album_images (
         album_name TEXT,
         artist_name TEXT,
         image_url TEXT,
         fetched_at TEXT,
+        spotify_id TEXT,
         PRIMARY KEY (album_name, artist_name)
     )""")
+    # Migration: add spotify_id to existing tables that predate this column
+    for _sql in [
+        "ALTER TABLE artist_images ADD COLUMN spotify_id TEXT",
+        "ALTER TABLE album_images ADD COLUMN spotify_id TEXT",
+    ]:
+        try:
+            conn.execute(_sql)
+        except Exception:
+            pass
     conn.execute("""CREATE TABLE IF NOT EXISTS artist_genres (
         artist_name TEXT PRIMARY KEY,
         genres TEXT,
@@ -345,11 +363,11 @@ def _get_artist_images_batch(names: list[str], cached_only: bool = False) -> dic
                     cached[name] = row[0]
                     continue
                 url = ""
+                match = None
                 try:
                     results = sp.search(q=f"artist:{name}", type="artist", limit=5)
                     items = results.get("artists", {}).get("items", [])
                     # Prefer exact name match (case-insensitive) over first result
-                    match = None
                     for item in items:
                         if item["name"].lower() == name.lower():
                             match = item
@@ -363,10 +381,11 @@ def _get_artist_images_batch(names: list[str], cached_only: bool = False) -> dic
                 except Exception as e:
                     if '429' in str(e) or 'rate' in str(e).lower():
                         rate_limited = True
+                artist_spotify_id = match["id"] if match else None
                 cached[name] = url
                 conn.execute(
-                    "INSERT OR REPLACE INTO artist_images (artist_name, image_url, fetched_at) VALUES (?, ?, ?)",
-                    (name, url, now),
+                    "INSERT OR REPLACE INTO artist_images (artist_name, image_url, fetched_at, spotify_id) VALUES (?, ?, ?, ?)",
+                    (name, url, now, artist_spotify_id),
                 )
                 conn.commit()
                 time.sleep(0.05)  # Rate limiting
@@ -544,8 +563,18 @@ def _get_album_images_batch(albums: list[tuple[str, str]], cached_only: bool = F
                     cached[(album, artist)] = row[0]
                     continue
                 url = ""
+                album_spotify_id = None
                 try:
                     url = _search_album_cover(sp, album, artist)
+                    if url:
+                        # Quick ID lookup — the image search already proved Spotify has this album
+                        try:
+                            _res = sp.search(q=f"album:{album} artist:{artist}", type="album", limit=1)
+                            _items = _res.get("albums", {}).get("items", [])
+                            if _items:
+                                album_spotify_id = _items[0]["id"]
+                        except Exception:
+                            pass
                 except Exception as e:
                     if '429' in str(e) or 'rate' in str(e).lower():
                         rate_limited = True
@@ -555,8 +584,8 @@ def _get_album_images_batch(albums: list[tuple[str, str]], cached_only: bool = F
 
                 cached[(album, artist)] = url
                 conn.execute(
-                    "INSERT OR REPLACE INTO album_images (album_name, artist_name, image_url, fetched_at) VALUES (?, ?, ?, ?)",
-                    (album, artist, url, now),
+                    "INSERT OR REPLACE INTO album_images (album_name, artist_name, image_url, fetched_at, spotify_id) VALUES (?, ?, ?, ?, ?)",
+                    (album, artist, url, now, album_spotify_id),
                 )
                 conn.commit()
                 time.sleep(0.05)
@@ -568,6 +597,40 @@ def _get_album_images_batch(albums: list[tuple[str, str]], cached_only: bool = F
 # ---------------------------------------------------------------------------
 # Genre cache
 # ---------------------------------------------------------------------------
+
+def _get_artist_spotify_ids_batch(names: list[str]) -> dict[str, str | None]:
+    """Return {artist_name: spotify_id | None} from the image cache."""
+    if not names:
+        return {}
+    conn = _get_db()
+    placeholders = ",".join("?" for _ in names)
+    rows = conn.execute(
+        f"SELECT artist_name, spotify_id FROM artist_images WHERE artist_name IN ({placeholders})",
+        names,
+    ).fetchall()
+    conn.close()
+    result: dict[str, str | None] = {n: None for n in names}
+    for name, sid in rows:
+        result[name] = sid
+    return result
+
+
+def _get_album_spotify_ids_batch(albums: list[tuple[str, str]]) -> dict[tuple[str, str], str | None]:
+    """Return {(album_name, artist_name): spotify_id | None} from the image cache."""
+    if not albums:
+        return {}
+    conn = _get_db()
+    result: dict[tuple[str, str], str | None] = {a: None for a in albums}
+    for album, artist in albums:
+        row = conn.execute(
+            "SELECT spotify_id FROM album_images WHERE album_name = ? AND artist_name = ?",
+            (album, artist),
+        ).fetchone()
+        if row:
+            result[(album, artist)] = row[0]
+    conn.close()
+    return result
+
 
 def _get_artist_genres_batch(names: list[str], cached_only: bool = False) -> dict[str, str]:
     """Look up artist genres: DB first, API for misses. Returns {artist: primary_genre}."""
@@ -725,6 +788,10 @@ def _precompute(df: pd.DataFrame) -> dict:
 
     cache["artist_names"] = artist_agg.reset_index()[["artist", "plays"]].values.tolist()
     cache["years"] = sorted(df["year"].unique().tolist())
+    cache["year_range"] = (
+        list(range(min(cache["years"]), max(cache["years"]) + 1))
+        if cache["years"] else []
+    )
 
     return cache
 
@@ -787,6 +854,99 @@ def _build_frontend() -> None:
         print("WARNING: Frontend build timed out.", file=sys.stderr)
 
 
+def _parse_retry_after(exc: Exception) -> int:
+    """Extract Retry-After seconds from a Spotify 429 exception string. Defaults to 3600."""
+    m = re.search(r'Retry will occur after:\s*(\d+)', str(exc))
+    return int(m.group(1)) if m else 3600
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    s = str(exc)
+    return '429' in s or 'rate' in s.lower() or 'request limit' in s.lower()
+
+
+def _run_spotify_id_backfill() -> tuple[int, int]:
+    """Fetch and store Spotify IDs for cached artists/albums that are missing them.
+
+    Returns (updated, retry_after) where:
+      updated     = number of entries written this run
+      retry_after = 0 if completed cleanly, or seconds to wait before retrying (rate limited)
+    Safe to call from any thread."""
+    if not (os.getenv("SPOTIPY_CLIENT_ID") and os.getenv("SPOTIPY_CLIENT_SECRET")):
+        return 0, 0
+    try:
+        sp_client = get_client_credentials_client()
+    except Exception:
+        return 0, 0
+
+    updated = 0
+    try:
+        conn = _get_db()
+        artists = conn.execute(
+            "SELECT artist_name FROM artist_images WHERE spotify_id IS NULL OR spotify_id = ''"
+        ).fetchall()
+        albums = conn.execute(
+            "SELECT album_name, artist_name FROM album_images WHERE spotify_id IS NULL OR spotify_id = ''"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return 0, 0
+
+    write_conn = _get_db()
+    try:
+        for (name,) in artists:
+            try:
+                results = sp_client.search(q=f"artist:{name}", type="artist", limit=5)
+                items = results.get("artists", {}).get("items", [])
+                match = next((it for it in items if it["name"].lower() == name.lower()), None)
+                if not match and items:
+                    match = items[0]
+                if match:
+                    write_conn.execute("UPDATE artist_images SET spotify_id = ? WHERE artist_name = ?", (match["id"], name))
+                    write_conn.commit()
+                    updated += 1
+            except Exception as e:
+                if _is_rate_limited(e):
+                    retry_after = _parse_retry_after(e)
+                    print(f"[backfill] Spotify rate limit — pausing {retry_after}s before retry.", flush=True)
+                    return updated, retry_after
+            time.sleep(0.1)
+
+        for (album, artist) in albums:
+            try:
+                results = sp_client.search(q=f"album:{album} artist:{artist}", type="album", limit=1)
+                items = results.get("albums", {}).get("items", [])
+                if items:
+                    write_conn.execute(
+                        "UPDATE album_images SET spotify_id = ? WHERE album_name = ? AND artist_name = ?",
+                        (items[0]["id"], album, artist),
+                    )
+                    write_conn.commit()
+                    updated += 1
+            except Exception as e:
+                if _is_rate_limited(e):
+                    retry_after = _parse_retry_after(e)
+                    print(f"[backfill] Spotify rate limit — pausing {retry_after}s before retry.", flush=True)
+                    return updated, retry_after
+            time.sleep(0.1)
+    finally:
+        write_conn.close()
+
+    return updated, 0
+
+
+def _schedule_spotify_backfill(interval_hours: float = 6.0) -> None:
+    """Run the Spotify ID backfill now (in background), then reschedule.
+    If rate-limited, the next run is delayed by the Retry-After time instead of interval_hours."""
+    def _run():
+        _, retry_after = _run_spotify_id_backfill()
+        next_secs = retry_after if retry_after > 0 else interval_hours * 3600
+        t = Timer(next_secs, _schedule_spotify_backfill, args=[interval_hours])
+        t.daemon = True
+        t.start()
+    Thread(target=_run, daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Init databases and build frontend on startup."""
@@ -804,6 +964,8 @@ async def lifespan(application: FastAPI):
     if os.path.isdir(_DIST_ASSETS):
         application.mount("/assets", StaticFiles(directory=_DIST_ASSETS), name="assets")
     print(f"Ready. Users DB: {USERS_DB}  Image cache: {DB_PATH}")
+    # Background Spotify ID backfill — runs now and every 6 hours
+    _schedule_spotify_backfill(interval_hours=6.0)
     yield
 
 
@@ -961,6 +1123,18 @@ async def admin_overview(_: dict = Depends(require_admin)):
     iconn.close()
 
     api_available = bool(os.getenv("SPOTIPY_CLIENT_ID") and os.getenv("SPOTIPY_CLIENT_SECRET"))
+    api_requests_ok: bool | None = None
+    api_retry_after: int | None = None
+    if api_available:
+        try:
+            sp_client = get_client_credentials_client()
+            sp_client.search(q="a", type="artist", limit=1)
+            api_requests_ok = True
+        except Exception as e:
+            api_requests_ok = False
+            if _is_rate_limited(e):
+                api_retry_after = _parse_retry_after(e)
+
     return {
         "users": user_count,
         "artist_images_cached": artist_cached,
@@ -969,6 +1143,8 @@ async def admin_overview(_: dict = Depends(require_admin)):
         "empty_artist_images": empty_artists,
         "empty_album_images": empty_albums,
         "api_available": api_available,
+        "api_requests_ok": api_requests_ok,
+        "api_retry_after": api_retry_after,
     }
 
 
@@ -1074,6 +1250,15 @@ async def admin_clear_user_data(user_id: str, admin: dict = Depends(require_admi
             os.remove(f)
     _user_cache.pop(user_id, None)
     return {"ok": True}
+
+
+@app.post("/api/admin/backfill-spotify-ids")
+async def admin_backfill_spotify_ids(admin: dict = Depends(require_admin)):
+    """Trigger an on-demand Spotify ID backfill for cached artists/albums missing IDs."""
+    if not (os.getenv("SPOTIPY_CLIENT_ID") and os.getenv("SPOTIPY_CLIENT_SECRET")):
+        raise HTTPException(status_code=400, detail="Spotify API not configured")
+    updated, retry_after = _run_spotify_id_backfill()
+    return {"updated": updated, "retry_after": retry_after}
 
 
 @app.get("/api/admin/image-cache")
@@ -1197,9 +1382,10 @@ async def admin_search_image(
                 url = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
                 artist = item["artists"][0]["name"] if item.get("artists") else ""
                 results.append({"name": item["name"], "artist": artist, "id": item["id"], "image": url})
-    except Exception:
-        pass
-    return results
+    except Exception as e:
+        if _is_rate_limited(e):
+            return {"results": [], "error": "rate_limited", "retry_after": _parse_retry_after(e)}
+    return {"results": results, "error": None, "retry_after": None}
 
 
 @app.post("/api/admin/image-cache/refresh-empty")
@@ -1300,8 +1486,10 @@ async def dashboard(
     years: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    ud = _require_user_data(user["sub"])
-    return _build_dashboard(ud["df"], ud["cache"], start_date, end_date, years)
+    def _work():
+        ud = _require_user_data(user["sub"])
+        return _build_dashboard(ud["df"], ud["cache"], start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/top-artists")
@@ -1312,8 +1500,10 @@ async def top_artists(
     years: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    ud = _require_user_data(user["sub"])
-    return _build_top_artists(ud["df"], limit, start_date, end_date, years)
+    def _work():
+        ud = _require_user_data(user["sub"])
+        return _build_top_artists(ud["df"], limit, start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/top-tracks")
@@ -1324,8 +1514,10 @@ async def top_tracks(
     years: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    ud = _require_user_data(user["sub"])
-    return _build_top_tracks(ud["df"], limit, start_date, end_date, years)
+    def _work():
+        ud = _require_user_data(user["sub"])
+        return _build_top_tracks(ud["df"], limit, start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/top-albums")
@@ -1336,8 +1528,10 @@ async def top_albums(
     years: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    ud = _require_user_data(user["sub"])
-    return _build_top_albums(ud["df"], limit, start_date, end_date, years)
+    def _work():
+        ud = _require_user_data(user["sub"])
+        return _build_top_albums(ud["df"], limit, start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/timeline")
@@ -1347,8 +1541,10 @@ async def timeline(
     years: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    ud = _require_user_data(user["sub"])
-    return _build_timeline(ud["df"], ud["cache"], start_date, end_date, years)
+    def _work():
+        ud = _require_user_data(user["sub"])
+        return _build_timeline(ud["df"], ud["cache"], start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/daily-heatmap")
@@ -1373,11 +1569,14 @@ async def habits(
     years: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    ud = _require_user_data(user["sub"])
-    df = _filter_by_date(ud["df"], start_date, end_date, years)
-    result = _compute_habits(df)
-    result["years"] = ud["cache"]["years"]
-    return result
+    def _work():
+        ud = _require_user_data(user["sub"])
+        df = _filter_by_date(ud["df"], start_date, end_date, years)
+        result = _compute_habits(df)
+        result["years"] = ud["cache"]["years"]
+        result["year_range"] = ud["cache"]["year_range"]
+        return result
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/top-artists-brief")
@@ -1413,8 +1612,10 @@ async def artist_detail(
     artist_name: str,
     user: dict = Depends(get_current_user),
 ):
-    ud = _require_user_data(user["sub"])
-    return _build_artist_detail(ud["df"], artist_name)
+    def _work():
+        ud = _require_user_data(user["sub"])
+        return _build_artist_detail(ud["df"], artist_name)
+    return await asyncio.to_thread(_work)
 
 
 @app.post("/api/resolve-images")
@@ -1426,13 +1627,16 @@ async def resolve_images(
     artist_names = body.get("artists", [])
     album_pairs = [tuple(a) for a in body.get("albums", [])]
 
-    result: dict = {"artists": {}, "albums": {}}
-    if artist_names:
-        result["artists"] = _get_artist_images_batch(artist_names, cached_only=False)
-    if album_pairs:
-        imgs = _get_album_images_batch(album_pairs, cached_only=False)
-        result["albums"] = {f"{a}||{b}": url for (a, b), url in imgs.items()}
-    return result
+    def _work():
+        result: dict = {"artists": {}, "albums": {}}
+        if artist_names:
+            result["artists"] = _get_artist_images_batch(artist_names, cached_only=False)
+        if album_pairs:
+            imgs = _get_album_images_batch(album_pairs, cached_only=False)
+            result["albums"] = {f"{a}||{b}": url for (a, b), url in imgs.items()}
+        return result
+
+    return await asyncio.to_thread(_work)
 
 
 @app.post("/api/resolve-genres")
@@ -1444,7 +1648,7 @@ async def resolve_genres(
     artist_names = body.get("artists", [])
     if not artist_names:
         return {}
-    return _get_artist_genres_batch(artist_names, cached_only=False)
+    return await asyncio.to_thread(_get_artist_genres_batch, artist_names, False)
 
 
 # ---------------------------------------------------------------------------
@@ -1468,59 +1672,112 @@ async def public_status(username: str, viewer: dict | None = Depends(get_optiona
 
 
 @app.get("/api/u/{username}/dashboard")
-async def public_dashboard(username: str, viewer: dict | None = Depends(get_optional_user)):
-    user = _resolve_public_user(username, viewer)
-    ud = _get_user_data(user["user_id"])
-    if ud is None:
-        raise HTTPException(status_code=404, detail="No data for this user")
-    return _build_dashboard(ud["df"], ud["cache"])
+async def public_dashboard(
+    username: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    years: Optional[str] = None,
+    viewer: dict | None = Depends(get_optional_user),
+):
+    def _work():
+        user = _resolve_public_user(username, viewer)
+        ud = _get_user_data(user["user_id"])
+        if ud is None:
+            raise HTTPException(status_code=404, detail="No data for this user")
+        return _build_dashboard(ud["df"], ud["cache"], start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/u/{username}/top-artists")
-async def public_top_artists(username: str, limit: int = Query(50, ge=1, le=500), viewer: dict | None = Depends(get_optional_user)):
-    user = _resolve_public_user(username, viewer)
-    ud = _get_user_data(user["user_id"])
-    if ud is None:
-        raise HTTPException(status_code=404, detail="No data for this user")
-    return _build_top_artists(ud["df"], limit)
+async def public_top_artists(
+    username: str,
+    limit: int = Query(50, ge=1, le=500),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    years: Optional[str] = None,
+    viewer: dict | None = Depends(get_optional_user),
+):
+    def _work():
+        user = _resolve_public_user(username, viewer)
+        ud = _get_user_data(user["user_id"])
+        if ud is None:
+            raise HTTPException(status_code=404, detail="No data for this user")
+        return _build_top_artists(ud["df"], limit, start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/u/{username}/top-tracks")
-async def public_top_tracks(username: str, limit: int = Query(50, ge=1, le=500), viewer: dict | None = Depends(get_optional_user)):
-    user = _resolve_public_user(username, viewer)
-    ud = _get_user_data(user["user_id"])
-    if ud is None:
-        raise HTTPException(status_code=404, detail="No data for this user")
-    return _build_top_tracks(ud["df"], limit)
+async def public_top_tracks(
+    username: str,
+    limit: int = Query(50, ge=1, le=500),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    years: Optional[str] = None,
+    viewer: dict | None = Depends(get_optional_user),
+):
+    def _work():
+        user = _resolve_public_user(username, viewer)
+        ud = _get_user_data(user["user_id"])
+        if ud is None:
+            raise HTTPException(status_code=404, detail="No data for this user")
+        return _build_top_tracks(ud["df"], limit, start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/u/{username}/top-albums")
-async def public_top_albums(username: str, limit: int = Query(50, ge=1, le=500), viewer: dict | None = Depends(get_optional_user)):
-    user = _resolve_public_user(username, viewer)
-    ud = _get_user_data(user["user_id"])
-    if ud is None:
-        raise HTTPException(status_code=404, detail="No data for this user")
-    return _build_top_albums(ud["df"], limit)
+async def public_top_albums(
+    username: str,
+    limit: int = Query(50, ge=1, le=500),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    years: Optional[str] = None,
+    viewer: dict | None = Depends(get_optional_user),
+):
+    def _work():
+        user = _resolve_public_user(username, viewer)
+        ud = _get_user_data(user["user_id"])
+        if ud is None:
+            raise HTTPException(status_code=404, detail="No data for this user")
+        return _build_top_albums(ud["df"], limit, start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/u/{username}/timeline")
-async def public_timeline(username: str, viewer: dict | None = Depends(get_optional_user)):
-    user = _resolve_public_user(username, viewer)
-    ud = _get_user_data(user["user_id"])
-    if ud is None:
-        raise HTTPException(status_code=404, detail="No data for this user")
-    return _build_timeline(ud["df"], ud["cache"])
+async def public_timeline(
+    username: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    years: Optional[str] = None,
+    viewer: dict | None = Depends(get_optional_user),
+):
+    def _work():
+        user = _resolve_public_user(username, viewer)
+        ud = _get_user_data(user["user_id"])
+        if ud is None:
+            raise HTTPException(status_code=404, detail="No data for this user")
+        return _build_timeline(ud["df"], ud["cache"], start_date, end_date, years)
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/u/{username}/habits")
-async def public_habits(username: str, viewer: dict | None = Depends(get_optional_user)):
-    user = _resolve_public_user(username, viewer)
-    ud = _get_user_data(user["user_id"])
-    if ud is None:
-        raise HTTPException(status_code=404, detail="No data for this user")
-    result = _compute_habits(ud["df"])
-    result["years"] = ud["cache"]["years"]
-    return result
+async def public_habits(
+    username: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    years: Optional[str] = None,
+    viewer: dict | None = Depends(get_optional_user),
+):
+    def _work():
+        user = _resolve_public_user(username, viewer)
+        ud = _get_user_data(user["user_id"])
+        if ud is None:
+            raise HTTPException(status_code=404, detail="No data for this user")
+        df = _filter_by_date(ud["df"], start_date, end_date, years)
+        result = _compute_habits(df)
+        result["years"] = ud["cache"]["years"]
+        result["year_range"] = ud["cache"]["year_range"]
+        return result
+    return await asyncio.to_thread(_work)
 
 
 @app.get("/api/u/{username}/artist/{artist_name}")
@@ -1561,8 +1818,7 @@ async def compare_multi(users: str = Query(...), viewer: dict | None = Depends(g
 
     N_ARTISTS, N_TRACKS = 100, 50
 
-    per_user = []
-    for username in usernames:
+    def _load_user(username: str) -> dict:
         user = _resolve_public_user(username, viewer)
         ud = _get_user_data(user["user_id"])
         if ud is None:
@@ -1571,7 +1827,7 @@ async def compare_multi(users: str = Query(...), viewer: dict | None = Depends(g
         top_artists_ser = df.groupby("artist")["hours"].sum().nlargest(N_ARTISTS)
         top_tracks_ser  = df.groupby(["track", "artist"])["hours"].sum().nlargest(N_TRACKS)
         all_tracks_ser  = df.groupby(["track", "artist"])["hours"].sum()
-        per_user.append({
+        return {
             "username": username,
             "df": df,
             "top_artists":         set(top_artists_ser.index),
@@ -1579,7 +1835,12 @@ async def compare_multi(users: str = Query(...), viewer: dict | None = Depends(g
             "top_tracks":          set(top_tracks_ser.index),
             "top_tracks_ordered":  list(top_tracks_ser.index),
             "all_tracks_ser":      all_tracks_ser,
-        })
+        }
+
+    # Load all users' data in parallel — each in its own thread
+    per_user = list(await asyncio.gather(*[
+        asyncio.to_thread(_load_user, u) for u in usernames
+    ]))
 
     def _stats(df: pd.DataFrame) -> dict:
         return {
@@ -1591,81 +1852,84 @@ async def compare_multi(users: str = Query(...), viewer: dict | None = Depends(g
             "last_listen": str(df["ts"].max().date()),
         }
 
-    all_artists: set = set()
-    for u in per_user:
-        all_artists |= u["top_artists"]
-    genres = _get_artist_genres_batch(list(all_artists), cached_only=True)
-    genres_0 = {genres.get(a, "Other") for a in per_user[0]["top_artists"]}
+    def _compute() -> dict:
+        all_artists: set = set()
+        for u in per_user:
+            all_artists |= u["top_artists"]
+        genres = _get_artist_genres_batch(list(all_artists), cached_only=True)
+        genres_0 = {genres.get(a, "Other") for a in per_user[0]["top_artists"]}
 
-    result_users = []
-    for i, u in enumerate(per_user):
-        if i == 0:
-            sim = None
-        else:
-            ta0, tai = per_user[0]["top_artists"], u["top_artists"]
-            tt0, tti = per_user[0]["top_tracks"], u["top_tracks"]
+        result_users = []
+        for i, u in enumerate(per_user):
+            if i == 0:
+                sim = None
+            else:
+                ta0, tai = per_user[0]["top_artists"], u["top_artists"]
+                tt0, tti = per_user[0]["top_tracks"], u["top_tracks"]
+                genres_i = {genres.get(a, "Other") for a in tai}
+                j_artists = len(ta0 & tai) / max(len(ta0 | tai), 1)
+                j_tracks = len(tt0 & tti) / max(len(tt0 | tti), 1)
+                g_overlap = len(genres_0 & genres_i) / max(len(genres_0 | genres_i), 1)
+                sim = round((j_artists * 0.4 + j_tracks * 0.3 + g_overlap * 0.3) * 100)
+            df_u = u["df"]
+            hourly = [int((df_u[df_u["ts"].dt.hour == h]).shape[0]) for h in range(24)]
+            skipped_df = df_u[df_u["skipped"] == True] if "skipped" in df_u.columns else df_u.iloc[0:0]
+            skip_rate = round(len(skipped_df) / max(len(df_u), 1) * 100, 1)
+            top_skipped_ser = (
+                skipped_df.groupby("artist").size() / df_u.groupby("artist").size()
+            ).dropna().nlargest(5)
+            result_users.append({
+                "username": u["username"],
+                "stats": _stats(df_u),
+                "similarity_to_first": sim,
+                "hourly_plays": hourly,
+                "skip_rate": skip_rate,
+                "top_skipped_artists": [{"name": a, "rate": round(float(r) * 100, 1)} for a, r in top_skipped_ser.items()],
+            })
+
+        u0 = per_user[0]
+        ta0, tt0 = u0["top_artists"], u0["top_tracks"]
+        ta0_ord, tt0_ord = u0["top_artists_ordered"], u0["top_tracks_ordered"]
+
+        pairs = []
+        for ui in per_user[1:]:
+            tai, tti = ui["top_artists"], ui["top_tracks"]
+            tai_ord, tti_ord = ui["top_artists_ordered"], ui["top_tracks_ordered"]
+            genres_a = {genres.get(a, "Other") for a in ta0}
             genres_i = {genres.get(a, "Other") for a in tai}
-            j_artists = len(ta0 & tai) / max(len(ta0 | tai), 1)
-            j_tracks = len(tt0 & tti) / max(len(tt0 | tti), 1)
-            g_overlap = len(genres_0 & genres_i) / max(len(genres_0 | genres_i), 1)
-            sim = round((j_artists * 0.4 + j_tracks * 0.3 + g_overlap * 0.3) * 100)
-        df_u = u["df"]
-        hourly = [int((df_u[df_u["ts"].dt.hour == h]).shape[0]) for h in range(24)]
-        skipped_df = df_u[df_u["skipped"] == True] if "skipped" in df_u.columns else df_u.iloc[0:0]
-        skip_rate = round(len(skipped_df) / max(len(df_u), 1) * 100, 1)
-        top_skipped_ser = (
-            skipped_df.groupby("artist").size() / df_u.groupby("artist").size()
-        ).dropna().nlargest(5)
-        result_users.append({
-            "username": u["username"],
-            "stats": _stats(df_u),
-            "similarity_to_first": sim,
-            "hourly_plays": hourly,
-            "skip_rate": skip_rate,
-            "top_skipped_artists": [{"name": a, "rate": round(float(r) * 100, 1)} for a, r in top_skipped_ser.items()],
-        })
+            j_art = len(ta0 & tai) / max(len(ta0 | tai), 1)
+            j_trk = len(tt0 & tti) / max(len(tt0 | tti), 1)
+            g_ov  = len(genres_a & genres_i) / max(len(genres_a | genres_i), 1)
+            sim   = round((j_art * 0.4 + j_trk * 0.3 + g_ov * 0.3) * 100)
+            shared_set = ta0 & tai
+            shared_artists_ranked = sorted(
+                shared_set,
+                key=lambda a: ta0_ord.index(a) + tai_ord.index(a)
+            )[:5]
+            only_other_artists = [a for a in tai_ord if a not in ta0][:5]
+            all_ser_0 = u0["all_tracks_ser"]
+            all_ser_i = ui["all_tracks_ser"]
+            combined_tracks = all_ser_0.add(all_ser_i, fill_value=0)
+            shared_t_set = set(all_ser_0.index) & set(all_ser_i.index)
+            shared_tracks_ranked = (
+                combined_tracks[combined_tracks.index.isin(shared_t_set)]
+                .nlargest(5)
+                .index.tolist()
+            )
+            only_other_tracks = [t for t in tti_ord if t not in tt0][:5]
+            imgs = _get_artist_images_batch(shared_artists_ranked + only_other_artists, cached_only=True)
+            pairs.append({
+                "username":           ui["username"],
+                "similarity":         sim,
+                "shared_artists":     [{"name": a, "image": imgs.get(a, "")} for a in shared_artists_ranked],
+                "only_other_artists": [{"name": a, "image": imgs.get(a, "")} for a in only_other_artists],
+                "shared_tracks":      [{"track": t, "artist": a} for t, a in shared_tracks_ranked],
+                "only_other_tracks":  [{"track": t, "artist": a} for t, a in only_other_tracks],
+                "artist_overlap":     {"shared": len(ta0 & tai), "only_other": len(tai - ta0), "only_self": len(ta0 - tai)},
+            })
+        return {"users": result_users, "pairs": pairs}
 
-    u0 = per_user[0]
-    ta0, tt0 = u0["top_artists"], u0["top_tracks"]
-    ta0_ord, tt0_ord = u0["top_artists_ordered"], u0["top_tracks_ordered"]
-
-    pairs = []
-    for ui in per_user[1:]:
-        tai, tti = ui["top_artists"], ui["top_tracks"]
-        tai_ord, tti_ord = ui["top_artists_ordered"], ui["top_tracks_ordered"]
-        genres_a = {genres.get(a, "Other") for a in ta0}
-        genres_i = {genres.get(a, "Other") for a in tai}
-        j_art = len(ta0 & tai) / max(len(ta0 | tai), 1)
-        j_trk = len(tt0 & tti) / max(len(tt0 | tti), 1)
-        g_ov  = len(genres_a & genres_i) / max(len(genres_a | genres_i), 1)
-        sim   = round((j_art * 0.4 + j_trk * 0.3 + g_ov * 0.3) * 100)
-        shared_set = ta0 & tai
-        shared_artists_ranked = sorted(
-            shared_set,
-            key=lambda a: ta0_ord.index(a) + tai_ord.index(a)
-        )[:5]
-        only_other_artists = [a for a in tai_ord if a not in ta0][:5]
-        all_ser_0 = u0["all_tracks_ser"]
-        all_ser_i = ui["all_tracks_ser"]
-        combined_tracks = all_ser_0.add(all_ser_i, fill_value=0)
-        shared_t_set = set(all_ser_0.index) & set(all_ser_i.index)
-        shared_tracks_ranked = (
-            combined_tracks[combined_tracks.index.isin(shared_t_set)]
-            .nlargest(5)
-            .index.tolist()
-        )
-        only_other_tracks = [t for t in tti_ord if t not in tt0][:5]
-        imgs = _get_artist_images_batch(shared_artists_ranked + only_other_artists, cached_only=True)
-        pairs.append({
-            "username":           ui["username"],
-            "similarity":         sim,
-            "shared_artists":     [{"name": a, "image": imgs.get(a, "")} for a in shared_artists_ranked],
-            "only_other_artists": [{"name": a, "image": imgs.get(a, "")} for a in only_other_artists],
-            "shared_tracks":      [{"track": t, "artist": a} for t, a in shared_tracks_ranked],
-            "only_other_tracks":  [{"track": t, "artist": a} for t, a in only_other_tracks],
-            "artist_overlap":     {"shared": len(ta0 & tai), "only_other": len(tai - ta0), "only_self": len(ta0 - tai)},
-        })
-    return {"users": result_users, "pairs": pairs}
+    return await asyncio.to_thread(_compute)
 
 
 # ---------------------------------------------------------------------------
@@ -1718,6 +1982,7 @@ def _build_dashboard(
             "album_pairs": [list(a) for a in track_albums],
         },
         "years": cache["years"],
+        "year_range": cache["year_range"],
     }
 
 
@@ -1739,11 +2004,14 @@ def _build_top_artists(
     names = rows["artist"].tolist()
     imgs = _get_artist_images_batch(names, cached_only=True)
     genres = _get_artist_genres_batch(names, cached_only=True)
+    artist_sids = _get_artist_spotify_ids_batch(names)
 
     table = rows.to_dict(orient="records")
     for row in table:
         row["image"] = imgs.get(row["artist"], "")
         row["genre"] = genres.get(row["artist"], "")
+        sid = artist_sids.get(row["artist"])
+        row["spotify_url"] = f"https://open.spotify.com/artist/{sid}" if sid else None
 
     return {
         "chart": {"labels": rows["artist"].tolist(), "values": [float(v) for v in rows["hours"]]},
@@ -1772,11 +2040,21 @@ def _build_top_tracks(
     artist_imgs = _get_artist_images_batch(artist_names, cached_only=True)
     genres = _get_artist_genres_batch(artist_names, cached_only=True)
 
+    # Build track URI lookup: (track, artist) -> first URI seen
+    uri_lookup: dict[tuple, str] = {}
+    if "track_uri" in df.columns:
+        for (track, artist), uri in df.groupby(["track", "artist"])["track_uri"].first().items():
+            if uri and isinstance(uri, str):
+                uri_lookup[(track, artist)] = uri
+
     table = rows.to_dict(orient="records")
     for row in table:
         row["image"] = imgs.get((row["album"], row["artist"]), "")
         row["artist_image"] = artist_imgs.get(row["artist"], "")
         row["genre"] = genres.get(row["artist"], "")
+        uri = uri_lookup.get((row["track"], row["artist"]))
+        track_id = uri.split(":")[-1] if uri and uri.startswith("spotify:track:") else None
+        row["spotify_url"] = f"https://open.spotify.com/track/{track_id}" if track_id else None
 
     return {
         "chart": {"labels": rows["track"].tolist(), "values": [float(v) for v in rows["hours"]]},
@@ -1805,12 +2083,15 @@ def _build_top_albums(
     artist_names = rows["artist"].unique().tolist()
     artist_imgs = _get_artist_images_batch(artist_names, cached_only=True)
     genres = _get_artist_genres_batch(artist_names, cached_only=True)
+    album_sids = _get_album_spotify_ids_batch(albums)
 
     table = rows.to_dict(orient="records")
     for row in table:
         row["image"] = imgs.get((row["album"], row["artist"]), "")
         row["artist_image"] = artist_imgs.get(row["artist"], "")
         row["genre"] = genres.get(row["artist"], "")
+        sid = album_sids.get((row["album"], row["artist"]))
+        row["spotify_url"] = f"https://open.spotify.com/album/{sid}" if sid else None
 
     return {
         "chart": {"labels": rows["album"].tolist(), "values": [float(v) for v in rows["hours"]]},
@@ -1872,7 +2153,7 @@ def _build_timeline(
         "sankey_nodes": sankey_nodes,
     }
 
-    return {"yearly": yearly_data, "heatmap": heatmap, "evolution": evolution, "years": cache["years"]}
+    return {"yearly": yearly_data, "heatmap": heatmap, "evolution": evolution, "years": cache["years"], "year_range": cache["year_range"]}
 
 
 def _build_artist_detail(df: pd.DataFrame, artist_name: str) -> dict:

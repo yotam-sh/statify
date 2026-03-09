@@ -104,6 +104,13 @@
             <button class="unit-opt profile-vis-opt" data-vis="private" onclick="setPublicProfile(false)">Private</button>
           </div>
         </div>
+        <div style="padding:4px 4px 8px;border-bottom:1px solid #333;margin-bottom:6px">
+          <div style="font-size:0.7rem;color:#888;margin-bottom:4px;padding-left:2px">Empty years</div>
+          <div class="unit-switch" style="width:100%">
+            <button class="unit-opt gap-year-opt active" data-gap="show" onclick="setShowGapYears(true)">Show</button>
+            <button class="unit-opt gap-year-opt" data-gap="hide" onclick="setShowGapYears(false)">Hide</button>
+          </div>
+        </div>
         <button class="user-menu-item" onclick="openUploadModal();closeUserMenu()">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
           Upload data
@@ -357,6 +364,10 @@
     <!-- Overview panel -->
     <div id="admin-panel-overview">
       <div id="admin-overview-content" class="grid grid-cols-2 md:grid-cols-3 gap-4"></div>
+      <div id="admin-backfill-bar" class="hidden mt-4 flex items-center gap-3 text-sm text-gray-400">
+        <button id="backfill-btn" onclick="adminBackfillIds()" class="year-btn text-xs">Backfill Spotify IDs</button>
+        <span id="backfill-result"></span>
+      </div>
     </div>
 
     <!-- Users panel -->
